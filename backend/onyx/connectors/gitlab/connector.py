@@ -240,18 +240,272 @@ class GitlabConnector(LoadConnector, PollConnector):
         return self._fetch_from_gitlab(start_datetime, end_datetime)
 
 
+class GitlabMarkdownOnlyConnector(GitlabConnector):
+    """GitLab connector that only processes markdown files."""
+    
+    _exclude_patterns = [
+        "logs",
+        ".github/",
+        ".gitlab/",
+        ".pre-commit-config.yaml",
+    ]
+
+    _markdown_extensions = [
+        ".md",
+        ".markdown", 
+        ".mdx",
+        ".mdown",
+        ".mkd",
+        ".mkdn",
+        "README*"
+    ]
+
+    def __init__(
+        self,
+        project_owner: str,
+        project_name: str,
+        batch_size: int = INDEX_BATCH_SIZE,
+        state_filter: str = "all",  # Ignored but kept for compatibility
+        include_mrs: bool = True,   # Ignored but kept for compatibility
+        include_issues: bool = True, # Ignored but kept for compatibility
+        include_code_files: bool = True, # Always True for this connector
+        is_group: bool = False,
+    ) -> None:
+        project_owner = project_owner.strip().rstrip('/')
+        project_name = project_name.strip().rstrip('/')
+        self.is_group = is_group or '/' in project_name
+
+        super().__init__(
+            project_owner=project_owner,
+            project_name=project_name,
+            batch_size=batch_size,
+            state_filter="all",
+            include_mrs=False,
+            include_issues=False,
+            include_code_files=True,
+        )
+
+    def _get_group_path(self) -> str:
+        """Construct the full group path."""
+        # Clean and join paths, removing empty segments
+        parts = []
+        if self.project_owner:
+            parts.extend(part for part in self.project_owner.split('/') if part)
+        if self.project_name:
+            parts.extend(part for part in self.project_name.split('/') if part)
+        
+        # Join with forward slashes
+        return '/'.join(parts)
+
+    def _get_projects(self) -> list[Project]:
+        """Get all projects from either a single project or a group."""
+        if self.gitlab_client is None:
+            raise ConnectorMissingCredentialError("Gitlab")
+
+        try:
+            group_path = self._get_group_path()
+            logger.info(f"Processing path: {group_path} (is_group={self.is_group})")
+
+            if self.is_group:
+                try:
+                    # Try direct group access first
+                    try:
+                        matching_group = self.gitlab_client.groups.get(group_path)
+                        logger.info(f"Found group by direct path: {matching_group.full_path} (ID: {matching_group.id})")
+                    except gitlab.exceptions.GitlabGetError:
+                        # If direct access fails, try search
+                        logger.info(f"Direct access failed, trying search for group: {group_path}")
+                        groups = self.gitlab_client.groups.list(search=group_path, all=True)
+                        logger.info(f"Found {len(groups)} groups matching search: {group_path}")
+                        
+                        # Log all found groups for debugging
+                        for g in groups:
+                            logger.info(f"Found group in search: {g.full_path} (ID: {g.id})")
+                        
+                        # Find the exact matching group
+                        matching_group = None
+                        for group in groups:
+                            if group.full_path.lower() == group_path.lower():
+                                matching_group = group
+                                logger.info(f"Exact match found: {group.full_path} (ID: {group.id})")
+                                break
+                        
+                        if matching_group is None:
+                            logger.error(f"No matching group found for path: {group_path}")
+                            return []
+                    
+                    # Get all projects including subgroups
+                    group_projects = matching_group.projects.list(include_subgroups=True, all=True)
+                    logger.info(f"Found {len(group_projects)} projects in group {matching_group.full_path}")
+                    
+                    # Convert GroupProject objects to full Project objects
+                    projects = []
+                    for group_project in group_projects:
+                        try:
+                            # Get the full project object using the ID
+                            project = self.gitlab_client.projects.get(group_project.id)
+                            logger.info(f"Loaded full project: {project.path_with_namespace}")
+                            projects.append(project)
+                        except gitlab.exceptions.GitlabGetError as e:
+                            logger.error(f"Failed to load full project {group_project.path_with_namespace}: {str(e)}")
+                            continue
+                    
+                    return projects
+                    
+                except gitlab.exceptions.GitlabGetError as e:
+                    if e.response_code == 404:
+                        logger.error(f"Group not found: {group_path}")
+                    else:
+                        logger.error(f"Error accessing group {group_path}: {str(e)}")
+                    return []
+                except Exception as e:
+                    logger.error(f"Unexpected error accessing group {group_path}: {str(e)}")
+                    return []
+            else:
+                logger.info(f"Fetching single project: {group_path}")
+                try:
+                    # Try direct project access first
+                    try:
+                        project = self.gitlab_client.projects.get(group_path)
+                        logger.info(f"Found project by direct path: {project.path_with_namespace}")
+                        return [project]
+                    except gitlab.exceptions.GitlabGetError:
+                        # If direct access fails, try search
+                        projects = self.gitlab_client.projects.list(search=group_path)
+                        logger.info(f"Found {len(projects)} projects matching search: {group_path}")
+                        
+                        for project in projects:
+                            if project.path_with_namespace.lower() == group_path.lower():
+                                # Get the full project object
+                                full_project = self.gitlab_client.projects.get(project.id)
+                                logger.info(f"Found matching project: {full_project.path_with_namespace}")
+                                return [full_project]
+                        
+                        logger.error(f"No matching project found for path: {group_path}")
+                        return []
+                        
+                except gitlab.exceptions.GitlabGetError as e:
+                    if e.response_code == 404:
+                        logger.error(f"Project not found: {group_path}")
+                    else:
+                        logger.error(f"Error accessing project {group_path}: {str(e)}")
+                    return []
+                except Exception as e:
+                    logger.error(f"Unexpected error accessing project {group_path}: {str(e)}")
+                    return []
+        except gitlab.exceptions.GitlabError as e:
+            logger.error(f"Error fetching projects: {str(e)}")
+            return []
+
+    def _should_exclude(self, path: str) -> bool:
+        """Check if a path matches any of the exclude patterns."""
+        return any(fnmatch.fnmatch(path, pattern) for pattern in self._exclude_patterns)
+
+    def _is_markdown_file(self, path: str) -> bool:
+        """Check if a file is a markdown file."""
+        filename = path.lower()
+        basename = path.split('/')[-1].lower()
+        
+        # Check if it's a README file (case insensitive)
+        if basename.startswith('readme'):
+            return True
+            
+        # Check file extensions
+        return any(filename.endswith(ext.lower()) for ext in self._markdown_extensions)
+
+    def _convert_code_to_document(
+        self, project: Project, file: Any, url: str, projectName: str, projectOwner: str
+    ) -> Document | None:
+        try:
+            file_content_obj = project.files.get(
+                file_path=file["path"], ref=project.default_branch or "master"
+            )
+            try:
+                file_content = file_content_obj.decode().decode("utf-8")
+            except UnicodeDecodeError:
+                file_content = file_content_obj.decode().decode("latin-1")
+
+            file_url = f"{url}/{project.path_with_namespace}/-/blob/{project.default_branch or 'master'}/{file['path']}"
+            
+            semantic_name = file["path"].split('/')[-1]
+            if semantic_name.lower().startswith('readme'):
+                semantic_name = f"README - {project.name}"
+                
+            doc_id = f"gitlab:{project.path_with_namespace}:{file['path']}"
+                
+            doc = Document(
+                id=doc_id,
+                sections=[{"text": file_content, "link": file_url}],
+                source=DocumentSource.GITLAB,
+                semantic_identifier=semantic_name,
+                doc_updated_at=datetime.now().replace(tzinfo=timezone.utc),
+                primary_owners=[],
+                metadata={
+                    "type": "MarkdownFile",
+                    "repository": project.name,
+                    "path": file["path"],
+                    "project": project.path_with_namespace,
+                    "file_url": file_url,
+                    "file_id": file["id"]
+                },
+            )
+            logger.info(f"Converted file {file['path']} to document")
+            return doc
+        except Exception as e:
+            logger.error(f"Error converting file {file['path']} to document: {str(e)}")
+            return None
+
+    def _fetch_from_gitlab(
+        self, start: datetime | None = None, end: datetime | None = None
+    ) -> GenerateDocumentsOutput:
+        if self.gitlab_client is None:
+            raise ConnectorMissingCredentialError("Gitlab")
+
+        projects = self._get_projects()
+        
+        for project in projects:
+            logger.info(f"Processing project: {project.path_with_namespace}")
+            
+            # Solo procesar archivos markdown
+            queue = deque([""])  # Empezar con el directorio raíz
+            while queue:
+                current_path = queue.popleft()
+                try:
+                    files = project.repository_tree(path=current_path, all=True)
+                    for file_batch in _batch_gitlab_objects(files, self.batch_size):
+                        code_doc_batch: list[Document] = []
+                        for file in file_batch:
+                            if self._should_exclude(file["path"]):
+                                continue
+
+                            if file["type"] == "blob" and self._is_markdown_file(file["path"]):
+                                doc = self._convert_code_to_document(
+                                    project,
+                                    file,
+                                    self.gitlab_client.url,
+                                    project.name,
+                                    project.path_with_namespace,
+                                )
+                                if doc:
+                                    code_doc_batch.append(doc)
+                            elif file["type"] == "tree":
+                                queue.append(file["path"])
+
+                        if code_doc_batch:
+                            yield code_doc_batch
+                except Exception as e:
+                    logger.error(f"Error processing path {current_path} in project {project.path_with_namespace}: {str(e)}")
+                    continue
+
+
 if __name__ == "__main__":
     import os
 
-    connector = GitlabConnector(
-        # gitlab_url="https://gitlab.com/api/v4",
+    connector = GitlabMarkdownOnlyConnector(
         project_owner=os.environ["PROJECT_OWNER"],
         project_name=os.environ["PROJECT_NAME"],
         batch_size=10,
-        state_filter="all",
-        include_mrs=True,
-        include_issues=True,
-        include_code_files=GITLAB_CONNECTOR_INCLUDE_CODE_FILES,
+        is_group=True,
     )
 
     connector.load_credentials(

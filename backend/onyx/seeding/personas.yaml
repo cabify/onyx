@@ -5,7 +5,7 @@ personas:
   # this is for OnyxBot to use when tagged in a non-configured channel
   # Careful setting specific IDs, this won't autoincrement the next ID value for postgres
   - id: 0
-    name: "Search"
+    name: "Search In Cabify Docs"
     description: >
       Assistant with access to documents and knowledge from Connected Sources.
     # Default Prompt objects attached to the persona, see prompts.yaml
@@ -55,7 +55,7 @@ personas:
         message: "Have me choose a subject. Once I have provided it, check against the knowledge base and point out any inconsistencies. For all your following responses, focus on identifying contradictions."
 
   - id: 1
-    name: "General"
+    name: "ChatGPT"
     description: >
       Assistant with no search functionalities. Chat directly with the Large Language Model.
     prompts:

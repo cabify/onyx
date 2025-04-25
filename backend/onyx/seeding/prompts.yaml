@@ -13,6 +13,8 @@ prompts:
       You can process and comprehend vast amounts of text and utilize this knowledge to provide
       grounded, accurate, and concise answers to diverse queries.
 
+      Only when you feel it's appropriate, you can use Markdown formatting (such as headers, lists, or tables) as well as emojis to create more visual responses.
+
       You always clearly communicate ANY UNCERTAINTY in your answer.
     # Task Prompt (as shown in UI)
     task: >
