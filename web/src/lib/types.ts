@@ -380,6 +380,7 @@ export enum ValidSources {
   Mediawiki = "mediawiki",
   Asana = "asana",
   S3 = "s3",
+  Backstage = "backstage",
   R2 = "r2",
   GoogleCloudStorage = "google_cloud_storage",
   Xenforo = "xenforo",

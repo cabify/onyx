@@ -923,6 +923,35 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
     advanced_values: [],
     overrideDefaultFreq: 60 * 60 * 24,
   },
+  backstage: {
+    description: "Configure Backstage connector",
+    values: [
+      {
+        type: "text",
+        query: "Enter the bucket name:",
+        label: "Bucket Name",
+        name: "bucket_name",
+        optional: false,
+      },
+      {
+        type: "text",
+        query: "Enter the prefix:",
+        label: "Prefix",
+        name: "prefix",
+        optional: true,
+      },
+      {
+        type: "text",
+        label: "Bucket Type",
+        name: "bucket_type",
+        optional: false,
+        default: "s3",
+        hidden: true,
+      },
+    ],
+    advanced_values: [],
+    overrideDefaultFreq: 60 * 60 * 24,
+  },
   r2: {
     description: "Configure R2 connector",
     values: [
@@ -1539,6 +1568,12 @@ export interface ZendeskConfig {}
 export interface DropboxConfig {}
 
 export interface S3Config {
+  bucket_type: "s3";
+  bucket_name: string;
+  prefix: string;
+}
+
+export interface BackstageConfig {
   bucket_type: "s3";
   bucket_name: string;
   prefix: string;

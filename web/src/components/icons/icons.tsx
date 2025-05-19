@@ -67,6 +67,7 @@ import discordIcon from "../../../public/discord.png";
 import airtableIcon from "../../../public/Airtable.svg";
 import s3Icon from "../../../public/S3.png";
 import r2Icon from "../../../public/r2.png";
+import backstageIcon from "../../../public/Backstage.png";
 import salesforceIcon from "../../../public/Salesforce.png";
 import freshdeskIcon from "../../../public/Freshdesk.png";
 import firefliesIcon from "../../../public/Fireflies.png";
@@ -1353,6 +1354,11 @@ export const S3Icon = ({
   size = 16,
   className = defaultTailwindCSS,
 }: IconProps) => <LogoIcon size={size} className={className} src={s3Icon} />;
+
+export const BackstageIcon = ({
+  size = 16,
+  className = defaultTailwindCSS,
+}: IconProps) => <LogoIcon size={size} className={className} src={backstageIcon} />;
 
 export const SharepointIcon = ({
   size = 16,
