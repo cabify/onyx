@@ -935,6 +935,13 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
       },
       {
         type: "text",
+        query: "Enter the Backstage URL:",
+        label: "Backstage URL",
+        name: "backstage_url",
+        optional: false,
+      },
+      {
+        type: "text",
         query: "Enter the prefix:",
         label: "Prefix",
         name: "prefix",

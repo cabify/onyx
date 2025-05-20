@@ -36,6 +36,7 @@ class BackstageConnector(BlobStorageConnector):
         self,
         bucket_type: str = BlobType.S3.value,
         bucket_name: str = "",
+        backstage_url: str = "",
         prefix: str = "",
         batch_size: int = INDEX_BATCH_SIZE
     ) -> None:
@@ -47,7 +48,7 @@ class BackstageConnector(BlobStorageConnector):
             batch_size=batch_size
         )
         self._allow_images = False  # Always disable images for backstage connector
-
+        self.backstage_url = backstage_url[:-1] if backstage_url.endswith("/") else backstage_url
 
     # Override the _yield_blob_objects parent method to specifically handle Backstage documentation pages
     def _yield_blob_objects(
@@ -68,7 +69,6 @@ class BackstageConnector(BlobStorageConnector):
 
             for obj in page["Contents"]:
                 key = obj["Key"]
-                
                 
                 # Skip directories and non-index.html files
                 if key.endswith("/") or not key.endswith("index.html"):
@@ -146,4 +146,4 @@ class BackstageConnector(BlobStorageConnector):
     def _get_backstage_url(self, key: str) -> str:
         # Remove the 'index.html' part from the path
         path = key.rsplit('/', 1)[0] if '/' in key else ''
-        return f"https://backstage.cabify.tools/docs/{path}"
+        return f"{self.backstage_url}/{path}"
