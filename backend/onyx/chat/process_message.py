@@ -59,7 +59,6 @@ from onyx.context.search.enums import SearchType
 from onyx.context.search.models import BaseFilters
 from onyx.context.search.models import InferenceSection
 from onyx.context.search.models import RetrievalDetails
-from onyx.context.search.models import SearchRequest
 from onyx.context.search.retrieval.search_runner import (
     inference_sections_from_ids,
 )
@@ -96,9 +95,9 @@ from onyx.document_index.factory import get_default_document_index
 from onyx.file_store.models import ChatFileType
 from onyx.file_store.models import FileDescriptor
 from onyx.file_store.models import InMemoryChatFile
+from onyx.file_store.utils import get_user_files
 from onyx.file_store.utils import load_all_chat_files
-from onyx.file_store.utils import load_all_user_file_files
-from onyx.file_store.utils import load_all_user_files
+from onyx.file_store.utils import load_in_memory_chat_files
 from onyx.file_store.utils import save_files
 from onyx.llm.exceptions import GenAIDisabledException
 from onyx.llm.factory import get_llms_for_persona
@@ -211,13 +210,13 @@ def _handle_search_tool_response_summary(
     user_files: list[UserFile] | None = None,
     loaded_user_files: list[InMemoryChatFile] | None = None,
 ) -> tuple[QADocsResponse, list[DbSearchDoc], list[int] | None]:
-    response_sumary = cast(SearchResponseSummary, packet.response)
+    response_summary = cast(SearchResponseSummary, packet.response)
 
     is_extended = isinstance(packet, ExtendedToolResponse)
     dropped_inds = None
 
     if not selected_search_docs:
-        top_docs = chunks_or_sections_to_search_docs(response_sumary.top_sections)
+        top_docs = chunks_or_sections_to_search_docs(response_summary.top_sections)
 
         deduped_docs = top_docs
         if (
@@ -264,13 +263,13 @@ def _handle_search_tool_response_summary(
         level, question_num = packet.level, packet.level_question_num
     return (
         QADocsResponse(
-            rephrased_query=response_sumary.rephrased_query,
+            rephrased_query=response_summary.rephrased_query,
             top_documents=response_docs,
-            predicted_flow=response_sumary.predicted_flow,
-            predicted_search=response_sumary.predicted_search,
-            applied_source_filters=response_sumary.final_filters.source_type,
-            applied_time_cutoff=response_sumary.final_filters.time_cutoff,
-            recency_bias_multiplier=response_sumary.recency_bias_multiplier,
+            predicted_flow=response_summary.predicted_flow,
+            predicted_search=response_summary.predicted_search,
+            applied_source_filters=response_summary.final_filters.source_type,
+            applied_time_cutoff=response_summary.final_filters.time_cutoff,
+            recency_bias_multiplier=response_summary.recency_bias_multiplier,
             level=level,
             level_question_num=question_num,
         ),
@@ -849,12 +848,12 @@ def stream_chat_message_objects(
         user_file_files: list[UserFile] | None = None
         if user_file_ids or user_folder_ids:
             # Load user files
-            user_files = load_all_user_files(
+            user_files = load_in_memory_chat_files(
                 user_file_ids or [],
                 user_folder_ids or [],
                 db_session,
             )
-            user_file_files = load_all_user_file_files(
+            user_file_files = get_user_files(
                 user_file_ids or [],
                 user_folder_ids or [],
                 db_session,
@@ -1209,34 +1208,6 @@ def stream_chat_message_objects(
                 "Performance: Forcing LLMEvaluationType.SKIP to prevent chunk evaluation for ordering-only search"
             )
 
-        search_request = SearchRequest(
-            query=final_msg.message,
-            evaluation_type=(
-                LLMEvaluationType.SKIP
-                if search_for_ordering_only
-                else (
-                    LLMEvaluationType.BASIC
-                    if persona.llm_relevance_filter
-                    else LLMEvaluationType.SKIP
-                )
-            ),
-            human_selected_filters=(
-                retrieval_options.filters if retrieval_options else None
-            ),
-            persona=persona,
-            offset=(retrieval_options.offset if retrieval_options else None),
-            limit=retrieval_options.limit if retrieval_options else None,
-            rerank_settings=new_msg_req.rerank_settings,
-            chunks_above=new_msg_req.chunks_above,
-            chunks_below=new_msg_req.chunks_below,
-            full_doc=new_msg_req.full_doc,
-            enable_auto_detect_filters=(
-                retrieval_options.enable_auto_detect_filters
-                if retrieval_options
-                else None
-            ),
-        )
-
         prompt_builder = AnswerPromptBuilder(
             user_message=default_build_user_message(
                 user_query=final_msg.message,
@@ -1273,7 +1244,8 @@ def stream_chat_message_objects(
             ),
             fast_llm=fast_llm,
             force_use_tool=force_use_tool,
-            search_request=search_request,
+            persona=persona,
+            rerank_settings=new_msg_req.rerank_settings,
             chat_session_id=chat_session_id,
             current_agent_message_id=reserved_message_id,
             tools=tools,

@@ -11,10 +11,10 @@ import {
 import useSWR, { mutate, useSWRConfig } from "swr";
 import { errorHandlingFetcher } from "./fetcher";
 import { useContext, useEffect, useMemo, useState } from "react";
-import { DateRangePickerValue } from "@/app/ee/admin/performance/DateRangeSelector";
+import { DateRangePickerValue } from "@/components/dateRangeSelectors/AdminDateRangeSelector";
 import { SourceMetadata } from "./search/interfaces";
 import {
-  destructureValue,
+  parseLlmDescriptor,
   findProviderForModel,
   structureValue,
 } from "./llm/utils";
@@ -23,11 +23,8 @@ import { AllUsersResponse } from "./types";
 import { Credential } from "./connectors/credentials";
 import { SettingsContext } from "@/components/settings/SettingsProvider";
 import { Persona, PersonaLabel } from "@/app/admin/assistants/interfaces";
-import {
-  isAnthropic,
-  LLMProviderDescriptor,
-} from "@/app/admin/configuration/llm/interfaces";
-
+import { LLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
+import { isAnthropic } from "@/app/admin/configuration/llm/utils";
 import { getSourceMetadata } from "./sources";
 import { AuthType, NEXT_PUBLIC_CLOUD_ENABLED } from "./constants";
 import { useUser } from "@/components/user/UserProvider";
@@ -483,7 +480,7 @@ export function useLlmManager(
     modelName: string | null | undefined
   ): LlmDescriptor => {
     if (modelName) {
-      const model = destructureValue(modelName);
+      const model = parseLlmDescriptor(modelName);
       if (!(model.modelName && model.modelName.length > 0)) {
         const provider = llmProviders.find((p) =>
           p.model_configurations
@@ -506,7 +503,7 @@ export function useLlmManager(
       );
 
       if (provider) {
-        return { ...model, name: provider.name };
+        return { ...model, provider: provider.name };
       }
     }
     return { name: "", provider: "", modelName: "" };
@@ -813,7 +810,12 @@ export function getDisplayNameForModel(modelName: string): string {
   if (modelName.startsWith("bedrock/")) {
     const parts = modelName.split("/");
     const lastPart = parts[parts.length - 1];
-    return MODEL_DISPLAY_NAMES[lastPart] || lastPart;
+    if (lastPart === undefined) {
+      return "";
+    }
+
+    const displayName = MODEL_DISPLAY_NAMES[lastPart];
+    return displayName || lastPart;
   }
 
   return MODEL_DISPLAY_NAMES[modelName] || modelName;

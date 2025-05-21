@@ -24,6 +24,7 @@ FASTAPI_USERS_AUTH_COOKIE_NAME = (
     "fastapiusersauth"  # Currently a constant, but logic allows for configuration
 )
 TENANT_ID_COOKIE_NAME = "onyx_tid"  # tenant id - for workaround cases
+ANONYMOUS_USER_COOKIE_NAME = "onyx_anonymous_user"
 
 NO_AUTH_USER_ID = "__no_auth_user__"
 NO_AUTH_USER_EMAIL = "anonymous@onyx.app"
@@ -273,6 +274,11 @@ class FileOrigin(str, Enum):
     INDEXING_CHECKPOINT = "indexing_checkpoint"
     PLAINTEXT_CACHE = "plaintext_cache"
     OTHER = "other"
+    QUERY_HISTORY_CSV = "query_history_csv"
+
+
+class FileType(str, Enum):
+    CSV = "text/csv"
 
 
 class MilestoneRecordType(str, Enum):
@@ -309,6 +315,7 @@ class OnyxCeleryQueues:
     CONNECTOR_PRUNING = "connector_pruning"
     CONNECTOR_DOC_PERMISSIONS_SYNC = "connector_doc_permissions_sync"
     CONNECTOR_EXTERNAL_GROUP_SYNC = "connector_external_group_sync"
+    CSV_GENERATION = "csv_generation"
 
     # Indexing queue
     CONNECTOR_INDEXING = "connector_indexing"
@@ -439,8 +446,15 @@ class OnyxCeleryTask:
     CONNECTOR_PRUNING_GENERATOR_TASK = "connector_pruning_generator_task"
     DOCUMENT_BY_CC_PAIR_CLEANUP_TASK = "document_by_cc_pair_cleanup_task"
     VESPA_METADATA_SYNC_TASK = "vespa_metadata_sync_task"
+
+    # chat retention
     CHECK_TTL_MANAGEMENT_TASK = "check_ttl_management_task"
+    PERFORM_TTL_MANAGEMENT_TASK = "perform_ttl_management_task"
+
     AUTOGENERATE_USAGE_REPORT_TASK = "autogenerate_usage_report_task"
+
+    EXPORT_QUERY_HISTORY_TASK = "export_query_history_task"
+    EXPORT_QUERY_HISTORY_CLEANUP_TASK = "export_query_history_cleanup_task"
 
 
 # this needs to correspond to the matching entry in supervisord

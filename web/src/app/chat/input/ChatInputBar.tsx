@@ -1,5 +1,5 @@
-import React, { useContext, useEffect, useRef, useState } from "react";
-import { FiPlusCircle, FiPlus, FiInfo, FiX, FiFilter } from "react-icons/fi";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { FiPlusCircle, FiPlus, FiX, FiFilter } from "react-icons/fi";
 import { FiLoader } from "react-icons/fi";
 import { ChatInputOption } from "./ChatInputOption";
 import { Persona } from "@/app/admin/assistants/interfaces";
@@ -37,8 +37,9 @@ import { buildImgUrl } from "../files/images/utils";
 import { useUser } from "@/components/user/UserProvider";
 import { AgenticToggle } from "./AgenticToggle";
 import { SettingsContext } from "@/components/settings/SettingsProvider";
-import { getProviderIcon } from "@/app/admin/configuration/llm/interfaces";
+import { getProviderIcon } from "@/app/admin/configuration/llm/utils";
 import { useDocumentsContext } from "../my-documents/DocumentsContext";
+import { UploadIntent } from "../ChatPage";
 
 const MAX_INPUT_HEIGHT = 200;
 export const SourceChip2 = ({
@@ -187,7 +188,7 @@ interface ChatInputBarProps {
   setAlternativeAssistant: (alternativeAssistant: Persona | null) => void;
   toggleDocumentSidebar: () => void;
   setFiles: (files: FileDescriptor[]) => void;
-  handleFileUpload: (files: File[]) => void;
+  handleFileUpload: (files: File[], intent: UploadIntent) => void;
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   filterManager: FilterManager;
   availableSources: SourceMetadata[];
@@ -237,6 +238,13 @@ export function ChatInputBar({
     setCurrentMessageFiles,
   } = useDocumentsContext();
 
+  // Create a Set of IDs from currentMessageFiles for efficient lookup
+  // Assuming FileDescriptor.id corresponds conceptually to FileResponse.file_id or FileResponse.id
+  const currentMessageFileIds = useMemo(
+    () => new Set(currentMessageFiles.map((f) => String(f.id))), // Ensure IDs are strings for comparison
+    [currentMessageFiles]
+  );
+
   const settings = useContext(SettingsContext);
   useEffect(() => {
     const textarea = textAreaRef.current;
@@ -254,14 +262,15 @@ export function ChatInputBar({
     if (items) {
       const pastedFiles = [];
       for (let i = 0; i < items.length; i++) {
-        if (items[i].kind === "file") {
-          const file = items[i].getAsFile();
+        const item = items[i];
+        if (item && item.kind === "file") {
+          const file = item.getAsFile();
           if (file) pastedFiles.push(file);
         }
       }
       if (pastedFiles.length > 0) {
         event.preventDefault();
-        handleFileUpload(pastedFiles);
+        handleFileUpload(pastedFiles, UploadIntent.ATTACH_TO_MESSAGE);
       }
     }
   };
@@ -352,26 +361,35 @@ export function ChatInputBar({
     handlePromptInput(text);
   };
 
+  let startFilterAt = "";
+  if (message !== undefined) {
+    const message_segments = message
+      .slice(message.lastIndexOf("@") + 1)
+      .split(/\s/);
+    if (message_segments[0]) {
+      startFilterAt = message_segments[0].toLowerCase();
+    }
+  }
+
   const assistantTagOptions = assistantOptions.filter((assistant) =>
-    assistant.name.toLowerCase().startsWith(
-      message
-        .slice(message.lastIndexOf("@") + 1)
-        .split(/\s/)[0]
-        .toLowerCase()
-    )
+    assistant.name.toLowerCase().startsWith(startFilterAt)
   );
+
+  let startFilterSlash = "";
+  if (message !== undefined) {
+    const message_segments = message
+      .slice(message.lastIndexOf("/") + 1)
+      .split(/\s/);
+    if (message_segments[0]) {
+      startFilterSlash = message_segments[0].toLowerCase();
+    }
+  }
 
   const [tabbingIconIndex, setTabbingIconIndex] = useState(0);
 
   const filteredPrompts = inputPrompts.filter(
     (prompt) =>
-      prompt.active &&
-      prompt.prompt.toLowerCase().startsWith(
-        message
-          .slice(message.lastIndexOf("/") + 1)
-          .split(/\s/)[0]
-          .toLowerCase()
-      )
+      prompt.active && prompt.prompt.toLowerCase().startsWith(startFilterSlash)
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -394,11 +412,15 @@ export function ChatInputBar({
         if (showPrompts) {
           const selectedPrompt =
             filteredPrompts[tabbingIconIndex >= 0 ? tabbingIconIndex : 0];
-          updateInputPrompt(selectedPrompt);
+          if (selectedPrompt) {
+            updateInputPrompt(selectedPrompt);
+          }
         } else {
           const option =
             assistantTagOptions[tabbingIconIndex >= 0 ? tabbingIconIndex : 0];
-          updatedTaggedAssistant(option);
+          if (option) {
+            updatedTaggedAssistant(option);
+          }
         }
       }
     }
@@ -553,21 +575,6 @@ export function ChatInputBar({
                     {alternativeAssistant.name}
                   </p>
                   <div className="flex gap-x-1 ml-auto">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button>
-                            <Hoverable icon={FiInfo} />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="max-w-xs flex flex-wrap">
-                            {alternativeAssistant.description}
-                          </p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-
                     <Hoverable
                       icon={FiX}
                       onClick={() => setAlternativeAssistant(null)}
@@ -662,14 +669,21 @@ export function ChatInputBar({
                       />
                     ))}
 
-                  {selectedFiles.map((file) => (
-                    <SourceChip
-                      key={file.id}
-                      icon={<FileIcon size={16} />}
-                      title={file.name}
-                      onRemove={() => removeSelectedFile(file)}
-                    />
-                  ))}
+                  {/* This is excluding image types because they get rendered differently via currentMessageFiles.map
+                  Seems quite hacky ... all rendering should probably be done in one place? */}
+                  {selectedFiles.map(
+                    (file) =>
+                      !currentMessageFileIds.has(
+                        String(file.file_id || file.id)
+                      ) && (
+                        <SourceChip
+                          key={file.id}
+                          icon={<FileIcon size={16} />}
+                          title={file.name}
+                          onRemove={() => removeSelectedFile(file)}
+                        />
+                      )
+                  )}
                   {selectedFolders.map((folder) => (
                     <SourceChip
                       key={folder.id}

@@ -25,8 +25,8 @@ import { getDisplayNameForModel, useLabels } from "@/lib/hooks";
 import { DocumentSetSelectable } from "@/components/documentSet/DocumentSetSelectable";
 import { addAssistantToList } from "@/lib/assistants/updateAssistantPreferences";
 import {
-  checkLLMSupportsImageInput,
-  destructureValue,
+  parseLlmDescriptor,
+  modelSupportsImageInput,
   structureValue,
 } from "@/lib/llm/utils";
 import { ToolSnapshot } from "@/lib/tools/interfaces";
@@ -139,6 +139,7 @@ export function AssistantEditor({
   admin?: boolean;
 }) {
   const { refreshAssistants, isImageGenerationAvailable } = useAssistants();
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const isAdminPage = searchParams?.get("admin") === "true";
@@ -547,6 +548,7 @@ export function AssistantEditor({
 
           const submissionData: PersonaUpsertParameters = {
             ...values,
+            icon_color: values.icon_color ?? null,
             existing_prompt_id: existingPrompt?.id ?? null,
             starter_messages: starterMessages,
             groups: groups,
@@ -643,7 +645,8 @@ export function AssistantEditor({
 
           // model must support image input for image generation
           // to work
-          const currentLLMSupportsImageOutput = checkLLMSupportsImageInput(
+          const currentLLMSupportsImageOutput = modelSupportsImageInput(
+            llmProviders,
             values.llm_model_version_override || defaultModelName || ""
           );
 
@@ -1161,7 +1164,7 @@ export function AssistantEditor({
                         setFieldValue("llm_model_provider_override", null);
                       } else {
                         const { modelName, provider, name } =
-                          destructureValue(selected);
+                          parseLlmDescriptor(selected);
                         if (modelName && name) {
                           setFieldValue(
                             "llm_model_version_override",

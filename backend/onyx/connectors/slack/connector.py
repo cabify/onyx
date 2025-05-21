@@ -1,5 +1,6 @@
 import contextvars
 import copy
+import itertools
 import re
 from collections.abc import Callable
 from collections.abc import Generator
@@ -12,6 +13,7 @@ from typing import Any
 from typing import cast
 
 from pydantic import BaseModel
+from redis import Redis
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from slack_sdk.http_retry import ConnectionErrorRetryHandler
@@ -292,7 +294,9 @@ def filter_channels(
         if channel not in all_channel_names:
             raise ValueError(
                 f"Channel '{channel}' not found in workspace. "
-                f"Available channels: {all_channel_names}"
+                f"Available channels (Showing {len(all_channel_names)} of "
+                f"{min(len(all_channel_names), SlackConnector.MAX_CHANNELS_TO_LOG)}): "
+                f"{list(itertools.islice(all_channel_names, SlackConnector.MAX_CHANNELS_TO_LOG))}"
             )
 
     return [
@@ -330,11 +334,19 @@ def _get_messages(
 
     # have to be in the channel in order to read messages
     if not channel["is_member"]:
-        make_slack_api_call_w_retries(
-            client.conversations_join,
-            channel=channel["id"],
-            is_private=channel["is_private"],
-        )
+        try:
+            make_slack_api_call_w_retries(
+                client.conversations_join,
+                channel=channel["id"],
+                is_private=channel["is_private"],
+            )
+        except SlackApiError as e:
+            if e.response["error"] == "is_archived":
+                logger.warning(f"Channel {channel['name']} is archived. Skipping.")
+                return [], False
+
+            logger.exception(f"Error joining channel {channel['name']}")
+            raise
         logger.info(f"Successfully joined '{channel['name']}'")
 
     response = make_slack_api_call_w_retries(
@@ -505,6 +517,8 @@ class SlackConnector(
 
     MAX_RETRIES = 7  # arbitrarily selected
 
+    MAX_CHANNELS_TO_LOG = 50
+
     def __init__(
         self,
         channels: list[str] | None = None,
@@ -525,8 +539,54 @@ class SlackConnector(
         self.user_cache: dict[str, BasicExpertInfo | None] = {}
         self.credentials_provider: CredentialsProviderInterface | None = None
         self.credential_prefix: str | None = None
-        self.delay_lock: str | None = None  # the redis key for the shared lock
-        self.delay_key: str | None = None  # the redis key for the shared delay
+        # self.delay_lock: str | None = None  # the redis key for the shared lock
+        # self.delay_key: str | None = None  # the redis key for the shared delay
+
+    @staticmethod
+    def make_credential_prefix(key: str) -> str:
+        return f"connector:slack:credential_{key}"
+
+    @staticmethod
+    def make_delay_lock(prefix: str) -> str:
+        return f"{prefix}:delay_lock"
+
+    @staticmethod
+    def make_delay_key(prefix: str) -> str:
+        return f"{prefix}:delay"
+
+    @staticmethod
+    def make_slack_web_client(
+        prefix: str, token: str, max_retry_count: int, r: Redis
+    ) -> WebClient:
+        delay_lock = SlackConnector.make_delay_lock(prefix)
+        delay_key = SlackConnector.make_delay_key(prefix)
+
+        # NOTE: slack has a built in RateLimitErrorRetryHandler, but it isn't designed
+        # for concurrent workers. We've extended it with OnyxRedisSlackRetryHandler.
+        connection_error_retry_handler = ConnectionErrorRetryHandler()
+        onyx_rate_limit_error_retry_handler = OnyxRedisSlackRetryHandler(
+            max_retry_count=max_retry_count,
+            delay_lock=delay_lock,
+            delay_key=delay_key,
+            r=r,
+        )
+        custom_retry_handlers: list[RetryHandler] = [
+            connection_error_retry_handler,
+            onyx_rate_limit_error_retry_handler,
+        ]
+
+        client = WebClient(token=token, retry_handlers=custom_retry_handlers)
+        return client
+
+    @property
+    def channels(self) -> list[str] | None:
+        return self._channels
+
+    @channels.setter
+    def channels(self, channels: list[str] | None) -> None:
+        self._channels = (
+            [channel.removeprefix("#") for channel in channels] if channels else None
+        )
 
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
         raise NotImplementedError("Use set_credentials_provider with this connector.")
@@ -536,30 +596,20 @@ class SlackConnector(
     ) -> None:
         credentials = credentials_provider.get_credentials()
         tenant_id = credentials_provider.get_tenant_id()
+        if not tenant_id:
+            raise ValueError("tenant_id cannot be None!")
+
         self.redis = get_redis_client(tenant_id=tenant_id)
 
-        self.credential_prefix = (
-            f"connector:slack:credential_{credentials_provider.get_provider_key()}"
+        self.credential_prefix = SlackConnector.make_credential_prefix(
+            credentials_provider.get_provider_key()
         )
-        self.delay_lock = f"{self.credential_prefix}:delay_lock"
-        self.delay_key = f"{self.credential_prefix}:delay"
-
-        # NOTE: slack has a built in RateLimitErrorRetryHandler, but it isn't designed
-        # for concurrent workers. We've extended it with OnyxRedisSlackRetryHandler.
-        connection_error_retry_handler = ConnectionErrorRetryHandler()
-        onyx_rate_limit_error_retry_handler = OnyxRedisSlackRetryHandler(
-            max_retry_count=self.MAX_RETRIES,
-            delay_lock=self.delay_lock,
-            delay_key=self.delay_key,
-            r=self.redis,
-        )
-        custom_retry_handlers: list[RetryHandler] = [
-            connection_error_retry_handler,
-            onyx_rate_limit_error_retry_handler,
-        ]
 
         bot_token = credentials["slack_bot_token"]
-        self.client = WebClient(token=bot_token, retry_handlers=custom_retry_handlers)
+        self.client = SlackConnector.make_slack_web_client(
+            self.credential_prefix, bot_token, self.MAX_RETRIES, self.redis
+        )
+
         # use for requests that must return quickly (e.g. realtime flows where user is waiting)
         self.fast_client = WebClient(
             token=bot_token, timeout=SlackConnector.FAST_TIMEOUT
@@ -837,12 +887,22 @@ class SlackConnector(
 if __name__ == "__main__":
     import os
     import time
+    from onyx.connectors.credentials_provider import OnyxStaticCredentialsProvider
+    from shared_configs.contextvars import get_current_tenant_id
 
     slack_channel = os.environ.get("SLACK_CHANNEL")
     connector = SlackConnector(
         channels=[slack_channel] if slack_channel else None,
     )
-    connector.load_credentials({"slack_bot_token": os.environ["SLACK_BOT_TOKEN"]})
+
+    provider = OnyxStaticCredentialsProvider(
+        tenant_id=get_current_tenant_id(),
+        connector_name="slack",
+        credential_json={
+            "slack_bot_token": os.environ["SLACK_BOT_TOKEN"],
+        },
+    )
+    connector.set_credentials_provider(provider)
 
     current = time.time()
     one_day_ago = current - 24 * 60 * 60  # 1 day
