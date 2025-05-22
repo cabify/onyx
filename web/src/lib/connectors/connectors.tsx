@@ -924,7 +924,7 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
     overrideDefaultFreq: 60 * 60 * 24,
   },
   backstage: {
-    description: "Configure Backstage connector",
+    description: "Configure Backstage S3 connector",
     values: [
       {
         type: "text",
