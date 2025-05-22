@@ -31,6 +31,7 @@ import {
   WikipediaIcon,
   AsanaIcon,
   S3Icon,
+  BackstageIcon,
   OCIStorageIcon,
   GoogleStorageIcon,
   ColorSlackIcon,
@@ -266,6 +267,12 @@ export const SOURCE_METADATA_MAP: SourceMap = {
     displayName: "S3",
     category: SourceCategory.Storage,
     docs: "https://docs.onyx.app/connectors/s3",
+  },
+  backstage: {
+    icon: BackstageIcon,
+    displayName: "Backstage",
+    category: SourceCategory.Storage,
+    docs: "https://docs.onyx.app/connectors/backstage",
   },
   r2: {
     icon: R2Icon,

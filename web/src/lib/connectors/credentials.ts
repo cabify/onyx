@@ -157,6 +157,11 @@ export interface S3CredentialJson {
   aws_secret_access_key: string;
 }
 
+export interface BackstageCredentialJson {
+  aws_access_key_id: string;
+  aws_secret_access_key: string;
+}
+
 export interface GCSCredentialJson {
   access_key_id: string;
   secret_access_key: string;
@@ -314,6 +319,10 @@ export const credentialTemplates: Record<ValidSources, any> = {
     aws_access_key_id: "",
     aws_secret_access_key: "",
   } as S3CredentialJson,
+  backstage: {
+    aws_access_key_id: "",
+    aws_secret_access_key: "",
+  } as BackstageCredentialJson,
   r2: {
     account_id: "",
     r2_access_key_id: "",

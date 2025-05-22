@@ -10,6 +10,7 @@ from onyx.connectors.airtable.airtable_connector import AirtableConnector
 from onyx.connectors.asana.connector import AsanaConnector
 from onyx.connectors.axero.connector import AxeroConnector
 from onyx.connectors.blob.connector import BlobStorageConnector
+from onyx.connectors.backstage.connector import BackstageConnector
 from onyx.connectors.bookstack.connector import BookstackConnector
 from onyx.connectors.clickup.connector import ClickupConnector
 from onyx.connectors.confluence.connector import ConfluenceConnector
@@ -120,6 +121,7 @@ def identify_connector_class(
         DocumentSource.EGNYTE: EgnyteConnector,
         DocumentSource.AIRTABLE: AirtableConnector,
         DocumentSource.HIGHSPOT: HighspotConnector,
+        DocumentSource.BACKSTAGE: BackstageConnector,
         # just for integration tests
         DocumentSource.MOCK_CONNECTOR: MockConnector,
     }
