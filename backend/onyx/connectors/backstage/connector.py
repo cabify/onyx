@@ -8,14 +8,17 @@ The connector is hardcoded to use the S3 bucket. From that bucket we only handle
 Also we use the path of the file to generate the backstage URL.
 """
 
+import os
 from datetime import datetime
 from datetime import timezone
-from typing import List
+from typing import Any, List
 
+import boto3
+from botocore.client import Config
 from onyx.configs.app_configs import INDEX_BATCH_SIZE
 from onyx.configs.constants import BlobType, DocumentSource
 from onyx.connectors.blob.connector import BlobStorageConnector
-from onyx.connectors.models import Document, TextSection
+from onyx.connectors.models import ConnectorMissingCredentialError, Document, TextSection
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.file_processing.html_utils import web_html_cleanup, parse_html_page_basic
 from onyx.utils.logger import setup_logger
@@ -49,6 +52,33 @@ class BackstageConnector(BlobStorageConnector):
         )
         self._allow_images = False  # Always disable images for backstage connector
         self.backstage_url = backstage_url[:-1] if backstage_url.endswith("/") else backstage_url
+        self.minio_endpoint_url = os.environ.get("MINIO_ENDPOINT_URL", "")
+
+    def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
+        """Override to handle MinIO connections if endpoint URL is provided."""
+
+        if not all(
+            credentials.get(key)
+            for key in ["aws_access_key_id", "aws_secret_access_key"]
+        ):
+            raise ConnectorMissingCredentialError("Custom MinIO")
+
+
+        if self.minio_endpoint_url:
+            session = boto3.session.Session()
+            self.s3_client = session.client(
+                "s3",
+                endpoint_url=self.minio_endpoint_url,
+                aws_access_key_id=credentials.get("aws_access_key_id"),
+                aws_secret_access_key=credentials.get("aws_secret_access_key"),
+                region_name="us-east-1",
+                config=Config(signature_version="s3v4"),
+            )
+            return None
+
+        else:
+            # Fall back to parent S3 logic
+            return super().load_credentials(credentials)
 
     # Override the _yield_blob_objects parent method to specifically handle Backstage documentation pages
     def _yield_blob_objects(
