@@ -117,6 +117,9 @@ export const getAuthUrlSS = async (
       return "";
     case "basic":
       return "";
+    case "header": {
+      return "";
+    }
     case "google_oauth": {
       return await getGoogleOAuthUrlSS(nextUrl);
     }
