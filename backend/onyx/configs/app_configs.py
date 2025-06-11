@@ -59,6 +59,9 @@ WEB_DOMAIN = os.environ.get("WEB_DOMAIN") or "http://localhost:3000"
 AUTH_TYPE = AuthType((os.environ.get("AUTH_TYPE") or AuthType.DISABLED.value).lower())
 DISABLE_AUTH = AUTH_TYPE == AuthType.DISABLED
 
+# When using header-based authentication, this header should contain the user's email
+HEADER_AUTH_EMAIL_HEADER = os.environ.get("HEADER_AUTH_EMAIL_HEADER") or "X-Auth-Email"
+
 # Encryption key secret is used to encrypt connector credentials, api keys, and other sensitive
 # information. This provides an extra layer of security on top of Postgres access controls
 # and is available in Onyx EE

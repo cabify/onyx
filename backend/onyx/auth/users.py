@@ -69,6 +69,7 @@ from onyx.configs.app_configs import AUTH_COOKIE_EXPIRE_TIME_SECONDS
 from onyx.configs.app_configs import AUTH_TYPE
 from onyx.configs.app_configs import DISABLE_AUTH
 from onyx.configs.app_configs import EMAIL_CONFIGURED
+from onyx.configs.app_configs import HEADER_AUTH_EMAIL_HEADER
 from onyx.configs.app_configs import REDIS_AUTH_KEY_PREFIX
 from onyx.configs.app_configs import REQUIRE_EMAIL_VERIFICATION
 from onyx.configs.app_configs import SESSION_EXPIRE_TIME_SECONDS
@@ -127,10 +128,10 @@ def is_user_admin(user: User | None) -> bool:
 
 
 def verify_auth_setting() -> None:
-    if AUTH_TYPE not in [AuthType.DISABLED, AuthType.BASIC, AuthType.GOOGLE_OAUTH]:
+    if AUTH_TYPE not in [AuthType.DISABLED, AuthType.BASIC, AuthType.GOOGLE_OAUTH, AuthType.HEADER]:
         raise ValueError(
             "User must choose a valid user authentication method: "
-            "disabled, basic, or google_oauth"
+            "disabled, basic, google_oauth, or header"
         )
     logger.notice(f"Using Auth Type: {AUTH_TYPE.value}")
 
@@ -172,6 +173,25 @@ def generate_password() -> str:
 
     return "".join(password)
 
+async def _fetch_or_create_header_user(email: str, db_session: AsyncSession) -> User:
+    """Fetch a user by email or create one if it doesn't exist."""
+    verify_email_domain(email)
+    tenant_id = get_current_tenant_id()
+    verify_email_in_whitelist(email, tenant_id)
+
+    user_db = SQLAlchemyUserAdminDB[User, uuid.UUID](db_session, User, OAuthAccount)
+    user_manager = UserManager(user_db)
+
+    try:
+        user = await user_manager.get_by_email(email)
+    except exceptions.UserNotExists:
+        user_create = UserCreate(
+            email=email, password=generate_password(), role=UserRole.BASIC
+        )
+        user = await user_manager.create(user_create, safe=True)
+        await user_manager.on_after_register(user)
+
+    return user
 
 def user_needs_to_be_verified() -> bool:
     if AUTH_TYPE == AuthType.BASIC or AUTH_TYPE == AuthType.CLOUD:
@@ -1036,6 +1056,12 @@ async def optional_user(
         hashed_api_key = get_hashed_api_key_from_request(request)
         if hashed_api_key:
             user = await fetch_user_for_api_key(hashed_api_key, async_db_session)
+
+    if user is None and AUTH_TYPE == AuthType.HEADER:
+        header_email = request.headers.get(HEADER_AUTH_EMAIL_HEADER)
+        if header_email:
+            user = await _fetch_or_create_header_user(header_email, async_db_session)
+
 
     return user
 

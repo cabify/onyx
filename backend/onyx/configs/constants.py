@@ -220,6 +220,9 @@ class AuthType(str, Enum):
     OIDC = "oidc"
     SAML = "saml"
 
+    # Authentication handled via a trusted proxy which provides the user email
+    HEADER = "header"
+
     # google auth and basic
     CLOUD = "cloud"
 
