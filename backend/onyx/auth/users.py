@@ -189,6 +189,8 @@ async def _fetch_or_create_header_user(email: str, db_session: AsyncSession) -> 
             email=email, password=generate_password(), role=UserRole.BASIC
         )
         user = await user_manager.create(user_create, safe=True)
+        if user.role != UserRole.BASIC:
+            await user_manager.user_db.update(user, {"role": UserRole.BASIC})
         await user_manager.on_after_register(user)
 
     return user

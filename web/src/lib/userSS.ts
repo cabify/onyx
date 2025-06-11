@@ -30,6 +30,9 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
     authType = "cloud";
   } else {
     authType = data.auth_type as AuthType;
+    if (authType === "header") {
+      authType = "disabled";
+    }
   }
 
   // for SAML / OIDC, we auto-redirect the user to the IdP when the user visits

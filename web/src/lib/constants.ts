@@ -4,7 +4,8 @@ export type AuthType =
   | "google_oauth"
   | "oidc"
   | "saml"
-  | "cloud";
+  | "cloud"
+  | "header";
 
 export const HOST_URL = process.env.WEB_DOMAIN || "http://127.0.0.1:3000";
 export const HEADER_HEIGHT = "h-16";
