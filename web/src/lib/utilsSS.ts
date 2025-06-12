@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { HOST_URL, INTERNAL_URL } from "./constants";
 
 export function buildClientUrl(path: string) {
@@ -56,16 +56,36 @@ export class UrlBuilder {
   }
 }
 
+
 export async function fetchSS(url: string, options?: RequestInit) {
-  const init = options || {
+  const headerName =
+    process.env.HEADER_AUTH_EMAIL_HEADER || "X-Auth-Email";
+
+  // ─── HEADERS ────────────────────────────────────────────────────────────────
+  const requestHeaders = await headers();          // await here
+  const headerEmail = requestHeaders.get(headerName);
+
+  // ─── COOKIES ────────────────────────────────────────────────────────────────
+  const cookieStore = await cookies();             // you were already awaiting this
+  const baseHeaders: Record<string, string> = {
+    cookie: cookieStore
+      .getAll()
+      .map(({ name, value }) => `${name}=${value}`)
+      .join("; "),
+  };
+  if (headerEmail) baseHeaders[headerName] = headerEmail;
+
+  // ─── FETCH ─────────────────────────────────────────────────────────────────
+  const init: RequestInit = {
     credentials: "include",
     cache: "no-store",
+    ...(options ?? {}),
     headers: {
-      cookie: (await cookies())
-        .getAll()
-        .map((cookie) => `${cookie.name}=${cookie.value}`)
-        .join("; "),
+      ...baseHeaders,
+      ...(options?.headers as Record<string, string> | undefined),
     },
   };
+
   return fetch(buildUrl(url), init);
 }
+
