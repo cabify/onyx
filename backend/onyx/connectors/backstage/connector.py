@@ -12,15 +12,17 @@ import os
 from datetime import datetime
 from datetime import timezone
 from typing import Any, List
+from urllib.parse import quote
 
 import boto3
 from botocore.client import Config
+from bs4 import BeautifulSoup
 from onyx.configs.app_configs import INDEX_BATCH_SIZE
 from onyx.configs.constants import BlobType, DocumentSource
 from onyx.connectors.blob.connector import BlobStorageConnector
 from onyx.connectors.models import ConnectorMissingCredentialError, Document, TextSection
 from onyx.connectors.interfaces import GenerateDocumentsOutput
-from onyx.file_processing.html_utils import web_html_cleanup, parse_html_page_basic
+from onyx.connectors.backstage.html2markdown import HTMLToMarkdownConverter
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -144,9 +146,10 @@ class BackstageConnector(BlobStorageConnector):
         # Try to extract title from HTML if available
         if html_content:
             try:
-                parsed_html = web_html_cleanup(html_content)
-                if parsed_html.title:
-                    return parsed_html.title
+                soup = BeautifulSoup(html_content, 'html.parser')
+                title_tag = soup.find('title')
+                if title_tag and title_tag.get_text().strip():
+                    return title_tag.get_text().strip()
             except Exception as e:
                 logger.debug(f"Error extracting title from HTML: {e}")
         
@@ -163,17 +166,15 @@ class BackstageConnector(BlobStorageConnector):
     
     def _sanitize_html_content(self, html_content: str) -> str:
         try:
-            parsed_html = web_html_cleanup(html_content)
-            return parsed_html.cleaned_text
+            converter = HTMLToMarkdownConverter()
+            return converter.convert_html_to_markdown(html_content)
         except Exception as e:
-            logger.warning(f"Error sanitizing HTML: {e}. Falling back to basic parsing.")
-            try:
-                return parse_html_page_basic(html_content)
-            except Exception as e2:
-                logger.error(f"Error with basic HTML parsing: {e2}. Returning raw HTML.")
-                return html_content
+            logger.warning(f"Error converting HTML to Markdown: {e}. Returning raw HTML.")
+            return html_content
     
     def _get_backstage_url(self, key: str) -> str:
         # Remove the 'index.html' part from the path
         path = key.rsplit('/', 1)[0] if '/' in key else ''
-        return f"{self.backstage_url}/{path}"
+        # URL encode the path to handle spaces and special characters
+        encoded_path = quote(path, safe='/')
+        return f"{self.backstage_url}/{encoded_path}"
