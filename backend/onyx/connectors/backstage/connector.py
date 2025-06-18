@@ -23,6 +23,7 @@ from onyx.connectors.blob.connector import BlobStorageConnector
 from onyx.connectors.models import ConnectorMissingCredentialError, Document, TextSection
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.connectors.backstage.html2markdown import HTMLToMarkdownConverter
+from onyx.connectors.backstage.markdown_splitter import MarkdownSectionSplitter
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -35,6 +36,7 @@ class BackstageConnector(BlobStorageConnector):
     1. Only handle files named 'index.html'
     2. Transform S3 links to Backstage URLs
     3. Extract text content from HTML files
+    4. Split content into sections with proper anchors
     """
     
     def __init__(
@@ -55,6 +57,7 @@ class BackstageConnector(BlobStorageConnector):
         self._allow_images = False  # Always disable images for backstage connector
         self.backstage_url = backstage_url[:-1] if backstage_url.endswith("/") else backstage_url
         self.minio_endpoint_url = os.environ.get("MINIO_ENDPOINT_URL", "")
+        self.markdown_splitter = MarkdownSectionSplitter()
 
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
         """Override to handle MinIO connections if endpoint URL is provided."""
@@ -158,11 +161,44 @@ class BackstageConnector(BlobStorageConnector):
         return path or "Backstage Root"
 
     def _split_document_into_sections(self, html_content: str, key: str) -> List[TextSection]:
-        backstage_url = self._get_backstage_url(key)
-        sanitized_content = self._sanitize_html_content(html_content)
-
-        # Currently returns a single section with the entire content
-        return [TextSection(link=backstage_url, text=sanitized_content)]
+        """Split HTML document into markdown sections with proper anchors.
+        
+        Args:
+            html_content: The HTML content to process
+            key: The S3 key/path for the document
+            
+        Returns:
+            List of TextSection objects, one for each markdown section
+        """
+        try:
+            # Convert HTML to markdown
+            sanitized_content = self._sanitize_html_content(html_content)
+            
+            # Split into sections using the markdown splitter
+            markdown_sections = self.markdown_splitter.split_into_sections(
+                markdown_content=sanitized_content,
+                html_content=html_content
+            )
+            
+            # Convert to TextSection objects
+            text_sections = []
+            base_url = self._get_backstage_url(key)
+            
+            for section in markdown_sections:
+                section_url = self.markdown_splitter.create_section_url(base_url, section.anchor_id)
+                text_sections.append(TextSection(
+                    link=section_url,
+                    text=section.content
+                ))
+            
+            return text_sections
+            
+        except Exception as e:
+            logger.warning(f"Error splitting document into sections: {e}. Falling back to single section.")
+            # Fallback to single section
+            backstage_url = self._get_backstage_url(key)
+            sanitized_content = self._sanitize_html_content(html_content)
+            return [TextSection(link=backstage_url, text=sanitized_content)]
     
     def _sanitize_html_content(self, html_content: str) -> str:
         try:
