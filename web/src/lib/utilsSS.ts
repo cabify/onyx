@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { HOST_URL, INTERNAL_URL } from "./constants";
 
 export function buildClientUrl(path: string) {
@@ -57,15 +57,44 @@ export class UrlBuilder {
 }
 
 export async function fetchSS(url: string, options?: RequestInit) {
+  // Get headers from the incoming request to forward to backend
+  const incomingHeaders = await headers();
+  const xEmailHeader = incomingHeaders.get("X-Email") || incomingHeaders.get("x-email");
+  
+  // Get cookies
+  const cookieHeader = (await cookies())
+    .getAll()
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join("; ");
+  
+  // Prepare headers to send to backend
+  const requestHeaders: Record<string, string> = {
+    cookie: cookieHeader,
+  };
+  
+  // Forward X-Email header if present
+  if (xEmailHeader) {
+    requestHeaders["X-Email"] = xEmailHeader;
+  }
+  
+  // Merge with any headers provided in options
+  if (options?.headers) {
+    Object.assign(requestHeaders, options.headers);
+  }
+  
+  console.log(`fetchSS - Making request to ${url}`);
+  console.log(`fetchSS - X-Email header to forward:`, xEmailHeader);
+  
   const init = options || {
     credentials: "include",
     cache: "no-store",
-    headers: {
-      cookie: (await cookies())
-        .getAll()
-        .map((cookie) => `${cookie.name}=${cookie.value}`)
-        .join("; "),
-    },
+    headers: requestHeaders,
   };
+  
+  // Update headers if init was provided but use our merged headers
+  if (options) {
+    init.headers = requestHeaders;
+  }
+  
   return fetch(buildUrl(url), init);
 }

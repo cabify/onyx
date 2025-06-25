@@ -3,6 +3,7 @@ import { User } from "./types";
 import { buildUrl, UrlBuilder } from "./utilsSS";
 import { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
 import { AuthType, NEXT_PUBLIC_CLOUD_ENABLED } from "./constants";
+import { headers } from "next/headers";
 
 export interface AuthTypeMetadata {
   authType: AuthType;
@@ -12,7 +13,25 @@ export interface AuthTypeMetadata {
 }
 
 export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
-  const res = await fetch(buildUrl("/auth/type"));
+  // Get headers from the incoming request to forward to backend
+  const incomingHeaders = await headers();
+  const xEmailHeader = incomingHeaders.get("X-Email") || incomingHeaders.get("x-email");
+  
+  // Prepare headers to send to backend
+  const requestHeaders: Record<string, string> = {};
+  
+  // Forward X-Email header if present
+  if (xEmailHeader) {
+    requestHeaders["X-Email"] = xEmailHeader;
+  }
+  
+  console.log("getAuthTypeMetadataSS - Making request to /auth/type");
+  console.log("getAuthTypeMetadataSS - X-Email header to forward:", xEmailHeader);
+  
+  const res = await fetch(buildUrl("/auth/type"), {
+    headers: requestHeaders,
+  });
+  
   if (!res.ok) {
     throw new Error("Failed to fetch data");
   }
@@ -22,6 +41,8 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
     requires_verification: boolean;
     anonymous_user_enabled: boolean | null;
   } = await res.json();
+
+  console.log("getAuthTypeMetadataSS - Response data:", data);
 
   let authType: AuthType;
 
@@ -174,22 +195,45 @@ export const logoutSS = async (
 
 export const getCurrentUserSS = async (): Promise<User | null> => {
   try {
+    const cookiesHeaders = (await cookies())
+      .getAll()
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+    
+    // Get headers from the incoming request to forward to backend
+    const incomingHeaders = await headers();
+    const xEmailHeader = incomingHeaders.get("X-Email") || incomingHeaders.get("x-email");
+    
+    console.log("getCurrentUserSS - Making request to /me");
+    console.log("getCurrentUserSS - Cookie header:", cookiesHeaders);
+    console.log("getCurrentUserSS - X-Email header to forward:", xEmailHeader);
+    
+    // Prepare headers to send to backend
+    const requestHeaders: Record<string, string> = {
+      cookie: cookiesHeaders,
+    };
+    
+    // Forward X-Email header if present
+    if (xEmailHeader) {
+      requestHeaders["X-Email"] = xEmailHeader;
+    }
+    
     const response = await fetch(buildUrl("/me"), {
       credentials: "include",
       next: { revalidate: 0 },
-      headers: {
-        cookie: (await cookies())
-          .getAll()
-          .map((cookie) => `${cookie.name}=${cookie.value}`)
-          .join("; "),
-      },
+      headers: requestHeaders,
     });
 
+    console.log("getCurrentUserSS - Response status:", response.status);
+    console.log("getCurrentUserSS - Response headers:", Object.fromEntries(response.headers.entries()));
+
     if (!response.ok) {
+      console.log("getCurrentUserSS - Response not ok:", await response.text());
       return null;
     }
 
     const user = await response.json();
+    console.log("getCurrentUserSS - Success, user:", user ? `${user.email} (${user.id})` : 'null');
     return user;
   } catch (e) {
     console.log(`Error fetching user: ${e}`);

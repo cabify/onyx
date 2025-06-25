@@ -189,6 +189,10 @@ def user_needs_to_be_verified() -> bool:
     if AUTH_TYPE == AuthType.BASIC or AUTH_TYPE == AuthType.CLOUD:
         return REQUIRE_EMAIL_VERIFICATION
 
+    # For bypass authentication, users are auto-verified
+    if AUTH_TYPE == AuthType.BYPASS:
+        return False
+
     # For other auth types, if the user is authenticated it's assumed that
     # the user is already verified via the external IDP
     return False
@@ -1038,21 +1042,30 @@ async def optional_user(
     async_db_session: AsyncSession = Depends(get_async_session),
     user: User | None = Depends(optional_fastapi_current_user),
 ) -> User | None:
+    # Debug logging
+    logger.info(f"Optional user check - Request path: {request.url.path}")
+    logger.info(f"Optional user check - Initial user from fastapi: {user.email if user else 'None'}")
+    
     versioned_fetch_user = fetch_versioned_implementation(
         "onyx.auth.users", "optional_user_"
     )
     user = await versioned_fetch_user(request, user, async_db_session)
+    logger.info(f"Optional user check - After versioned fetch: {user.email if user else 'None'}")
 
     # check if an API key is present
     if user is None:
         hashed_api_key = get_hashed_api_key_from_request(request)
         if hashed_api_key:
             user = await fetch_user_for_api_key(hashed_api_key, async_db_session)
+            logger.info(f"Optional user check - After API key check: {user.email if user else 'None'}")
 
     # check for bypass authentication
     if user is None and AUTH_TYPE == AuthType.BYPASS:
+        logger.info("Optional user check - Attempting bypass authentication")
         user = await bypass_auth_user(request, async_db_session)
+        logger.info(f"Optional user check - After bypass auth: {user.email if user else 'None'}")
 
+    logger.info(f"Optional user check - Final result: {user.email if user else 'None'}")
     return user
 
 
@@ -1062,13 +1075,22 @@ async def double_check_user(
     include_expired: bool = False,
     allow_anonymous_access: bool = False,
 ) -> User | None:
+    logger.info(f"Double check user - User: {user.email if user else 'None'}")
+    logger.info(f"Double check user - Optional: {optional}")
+    logger.info(f"Double check user - Allow anonymous: {allow_anonymous_access}")
+    logger.info(f"Double check user - AUTH_TYPE: {AUTH_TYPE}")
+    logger.info(f"Double check user - DISABLE_AUTH: {DISABLE_AUTH}")
+    
     if optional:
+        logger.info("Double check user - Optional is True, returning user as-is")
         return user
 
     if user is not None:
+        logger.info(f"Double check user - User found: {user.email}, checking verification...")
         # If user attempted to authenticate, verify them, do not default
         # to anonymous access if it fails.
         if user_needs_to_be_verified() and not user.is_verified:
+            logger.warning(f"Double check user - User {user.email} is not verified")
             raise BasicAuthenticationError(
                 detail="Access denied. User is not verified.",
             )
@@ -1078,15 +1100,19 @@ async def double_check_user(
             and user.oidc_expiry < datetime.now(timezone.utc)
             and not include_expired
         ):
+            logger.warning(f"Double check user - User {user.email} OIDC token expired")
             raise BasicAuthenticationError(
                 detail="Access denied. User's OIDC token has expired.",
             )
 
+        logger.info(f"Double check user - User {user.email} passed all checks")
         return user
 
     if allow_anonymous_access:
+        logger.info("Double check user - No user but anonymous access allowed")
         return None
 
+    logger.warning("Double check user - No user found and authentication required")
     raise BasicAuthenticationError(
         detail="Access denied. User is not authenticated.",
     )
@@ -1412,13 +1438,20 @@ async def bypass_auth_user(
     If the header exists, authenticate the user based on the provided email.
     If the user doesn't exist, create a new user account with BASIC role.
     """
+    # Debug logging for all requests
+    logger.info(f"Bypass auth check - Request path: {request.url.path}")
+    logger.info(f"Bypass auth check - Request headers: {dict(request.headers)}")
+    logger.info(f"Bypass auth check - AUTH_TYPE: {AUTH_TYPE}")
+    
     if AUTH_TYPE != AuthType.BYPASS:
+        logger.info("Bypass auth: AUTH_TYPE is not BYPASS, skipping")
         return None
     
     # Get email from X-Email header
-    email = request.headers.get("X-Email")
+    email = request.headers.get("X-Email") or request.headers.get("x-email")
     if not email:
         logger.warning("Bypass auth: X-Email header is missing")
+        logger.warning(f"Available headers: {list(request.headers.keys())}")
         return None
     
     logger.info(f"Bypass auth: Attempting to authenticate user with email: {email}")
@@ -1431,7 +1464,7 @@ async def bypass_auth_user(
         user = get_user_by_email(email, async_db_session)
         
         if user:
-            logger.info(f"Bypass auth: Found existing user: {user.id}")
+            logger.info(f"Bypass auth: Found existing user: {user.id} ({user.email})")
             return user
         
         # Create new user if doesn't exist
@@ -1467,6 +1500,8 @@ async def bypass_auth_user(
         
     except Exception as e:
         logger.error(f"Bypass auth error for email {email}: {str(e)}")
+        import traceback
+        logger.error(f"Bypass auth traceback: {traceback.format_exc()}")
         return None
 
 
