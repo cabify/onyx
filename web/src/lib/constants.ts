@@ -4,6 +4,7 @@ export type AuthType =
   | "google_oauth"
   | "oidc"
   | "saml"
+  | "bypass"
   | "cloud";
 
 export const HOST_URL = process.env.WEB_DOMAIN || "http://127.0.0.1:3000";

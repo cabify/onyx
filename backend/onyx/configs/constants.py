@@ -242,6 +242,7 @@ class AuthType(str, Enum):
     GOOGLE_OAUTH = "google_oauth"
     OIDC = "oidc"
     SAML = "saml"
+    BYPASS = "bypass"
 
     # google auth and basic
     CLOUD = "cloud"

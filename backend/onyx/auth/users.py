@@ -134,10 +134,15 @@ def is_user_admin(user: User | None) -> bool:
 
 
 def verify_auth_setting() -> None:
-    if AUTH_TYPE not in [AuthType.DISABLED, AuthType.BASIC, AuthType.GOOGLE_OAUTH]:
+    if AUTH_TYPE not in [
+        AuthType.DISABLED,
+        AuthType.BASIC,
+        AuthType.GOOGLE_OAUTH,
+        AuthType.BYPASS,
+    ]:
         raise ValueError(
             "User must choose a valid user authentication method: "
-            "disabled, basic, or google_oauth"
+            "disabled, basic, google_oauth, or bypass"
         )
     logger.notice(f"Using Auth Type: {AUTH_TYPE.value}")
 
@@ -1044,6 +1049,10 @@ async def optional_user(
         if hashed_api_key:
             user = await fetch_user_for_api_key(hashed_api_key, async_db_session)
 
+    # check for bypass authentication
+    if user is None and AUTH_TYPE == AuthType.BYPASS:
+        user = await bypass_auth_user(request, async_db_session)
+
     return user
 
 
@@ -1391,4 +1400,92 @@ async def api_key_dep(
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+    return user
+
+
+async def bypass_auth_user(
+    request: Request, async_db_session: AsyncSession = Depends(get_async_session)
+) -> User | None:
+    """
+    Bypass authentication based on X-Email header.
+    If the header is missing, returns None (which will result in 403).
+    If the header exists, authenticate the user based on the provided email.
+    If the user doesn't exist, create a new user account with BASIC role.
+    """
+    if AUTH_TYPE != AuthType.BYPASS:
+        return None
+    
+    # Get email from X-Email header
+    email = request.headers.get("X-Email")
+    if not email:
+        logger.warning("Bypass auth: X-Email header is missing")
+        return None
+    
+    logger.info(f"Bypass auth: Attempting to authenticate user with email: {email}")
+    
+    try:
+        # Verify email domain if configured
+        verify_email_domain(email)
+        
+        # Try to get existing user
+        user = get_user_by_email(email, async_db_session)
+        
+        if user:
+            logger.info(f"Bypass auth: Found existing user: {user.id}")
+            return user
+        
+        # Create new user if doesn't exist
+        logger.info(f"Bypass auth: Creating new user for email: {email}")
+        
+        # Get user manager to access password helper
+        user_db = SQLAlchemyUserDatabase[User, uuid.UUID](async_db_session, User, OAuthAccount)
+        user_manager = UserManager(user_db)
+        
+        # Generate a random password for the user (they won't use it)
+        password = generate_password()
+        hashed_password = user_manager.password_helper.hash(password)
+        
+        # Determine role
+        role = UserRole.BASIC
+        user_count = await get_user_count()
+        if user_count == 0 or email in get_default_admin_user_emails():
+            role = UserRole.ADMIN
+        
+        # Create user dict
+        user_dict = {
+            "email": email,
+            "hashed_password": hashed_password,
+            "is_verified": True,  # Auto-verify bypass users
+            "role": role,
+        }
+        
+        # Create the user using the user database
+        user = await user_db.create(user_dict)
+        
+        logger.info(f"Bypass auth: Successfully created user: {user.id} with role: {user.role}")
+        return user
+        
+    except Exception as e:
+        logger.error(f"Bypass auth error for email {email}: {str(e)}")
+        return None
+
+
+async def bypass_auth_dependency(
+    request: Request,
+    async_db_session: AsyncSession = Depends(get_async_session),
+) -> User | None:
+    """
+    Dependency wrapper for bypass authentication.
+    Returns the authenticated user or raises HTTP 403 if authentication fails.
+    """
+    if AUTH_TYPE != AuthType.BYPASS:
+        return None
+    
+    user = await bypass_auth_user(request, async_db_session)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authentication failed: X-Email header missing or invalid"
+        )
+    
     return user

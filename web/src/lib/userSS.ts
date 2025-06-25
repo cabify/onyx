@@ -42,6 +42,17 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
       anonymousUserEnabled: data.anonymous_user_enabled,
     };
   }
+
+  // for bypass authentication, no special handling needed
+  if (authType === "bypass") {
+    return {
+      authType,
+      autoRedirect: false,
+      requiresVerification: false, // Bypass users are auto-verified
+      anonymousUserEnabled: data.anonymous_user_enabled,
+    };
+  }
+
   return {
     authType,
     autoRedirect: false,
@@ -114,6 +125,8 @@ export const getAuthUrlSS = async (
       return "";
     case "basic":
       return "";
+    case "bypass":
+      return ""; // No auth URL needed for bypass, handled by header
     case "google_oauth": {
       return await getGoogleOAuthUrlSS(nextUrl);
     }

@@ -416,6 +416,11 @@ def get_application(lifespan_override: Lifespan | None = None) -> FastAPI:
             prefix="/users",
         )
 
+    if AUTH_TYPE == AuthType.BYPASS:
+        # For bypass authentication, we don't need any special auth routes
+        # Authentication is handled by checking the X-Email header
+        logger.notice("Bypass authentication configured - authentication via X-Email header")
+
     if AUTH_TYPE == AuthType.GOOGLE_OAUTH:
         # For Google OAuth, refresh tokens are requested by:
         # 1. Adding the right scopes

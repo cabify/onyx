@@ -38,6 +38,11 @@ const Page = async (props: {
     return redirect("/chat");
   }
 
+  // for bypass auth, redirect directly to chat (authentication happens via header)
+  if (authTypeMetadata?.authType === "bypass") {
+    return redirect("/chat");
+  }
+
   // if user is already logged in, take them to the main app page
   if (currentUser && currentUser.is_active && !currentUser.is_anonymous_user) {
     console.log("Login page: User is logged in, redirecting to chat", {
