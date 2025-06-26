@@ -55,10 +55,6 @@ export async function fetchChatData(searchParams: {
   [key: string]: string;
 }): Promise<FetchChatDataResult | { redirect: string }> {
   const requestCookies = await cookies();
-  const requestHeaders = await headers();
-  
-  // Debug logging for bypass auth (without sensitive data)
-  console.log("fetchChatData - X-Email header:", requestHeaders.get("X-Email") || requestHeaders.get("x-email") || 'not present');
   
   const tasks = [
     getAuthTypeMetadataSS(),
@@ -93,10 +89,6 @@ export async function fetchChatData(searchParams: {
 
   const authTypeMetadata = results[0] as AuthTypeMetadata | null;
   const user = results[1] as User | null;
-  
-  // Debug logging
-  console.log("fetchChatData - authTypeMetadata:", authTypeMetadata);
-  console.log("fetchChatData - user:", user ? `${user.email} (${user.id})` : 'null');
 
   const ccPairsResponse = results[2] as Response | null;
   const documentSetsResponse = results[3] as Response | null;

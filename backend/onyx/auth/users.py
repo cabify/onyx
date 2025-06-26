@@ -1043,30 +1043,21 @@ async def optional_user(
     async_db_session: AsyncSession = Depends(get_async_session),
     user: User | None = Depends(optional_fastapi_current_user),
 ) -> User | None:
-    # Debug logging
-    logger.info(f"Optional user check - Request path: {request.url.path}")
-    logger.info(f"Optional user check - Initial user from fastapi: {user.email if user else 'None'}")
-    
     versioned_fetch_user = fetch_versioned_implementation(
         "onyx.auth.users", "optional_user_"
     )
     user = await versioned_fetch_user(request, user, async_db_session)
-    logger.info(f"Optional user check - After versioned fetch: {user.email if user else 'None'}")
 
     # check if an API key is present
     if user is None:
         hashed_api_key = get_hashed_api_key_from_request(request)
         if hashed_api_key:
             user = await fetch_user_for_api_key(hashed_api_key, async_db_session)
-            logger.info(f"Optional user check - After API key check: {user.email if user else 'None'}")
 
     # check for bypass authentication
     if user is None and AUTH_TYPE == AuthType.BYPASS:
-        logger.info("Optional user check - Attempting bypass authentication")
         user = await bypass_auth_user(request, async_db_session)
-        logger.info(f"Optional user check - After bypass auth: {user.email if user else 'None'}")
 
-    logger.info(f"Optional user check - Final result: {user.email if user else 'None'}")
     return user
 
 
@@ -1077,19 +1068,13 @@ async def bypass_auth_user(
     Simple bypass authentication based on X-Email header.
     This will be stateless like API key auth - checks header on every request.
     """
-    logger.info(f"Bypass auth check - Request path: {request.url.path}")
-    logger.info(f"Bypass auth check - AUTH_TYPE: {AUTH_TYPE}")
-    
     if AUTH_TYPE != AuthType.BYPASS:
         return None
     
     # Get email from X-Email header
     email = request.headers.get("X-Email") or request.headers.get("x-email")
     if not email:
-        logger.warning("Bypass auth: X-Email header is missing")
         return None
-    
-    logger.info(f"Bypass auth: Authenticating user with email: {email}")
     
     try:
         # Verify email domain if configured
@@ -1099,12 +1084,9 @@ async def bypass_auth_user(
         user = await get_user_by_email_async(email, async_db_session)
         
         if user:
-            logger.info(f"Bypass auth: Found existing user: {user.id} ({user.email})")
             return user
         
         # Create new user if doesn't exist
-        logger.info(f"Bypass auth: Creating new user for email: {email}")
-        
         user_db = SQLAlchemyUserDatabase[User, uuid.UUID](async_db_session, User, OAuthAccount)
         user_manager = UserManager(user_db)
         
@@ -1124,13 +1106,10 @@ async def bypass_auth_user(
         }
         
         user = await user_db.create(user_dict)
-        logger.info(f"Bypass auth: Created user {user.id} with role {user.role}")
         return user
         
     except Exception as e:
         logger.error(f"Bypass auth error for email {email}: {str(e)}")
-        import traceback
-        logger.error(f"Bypass auth traceback: {traceback.format_exc()}")
         return None
 
 
@@ -1140,22 +1119,13 @@ async def double_check_user(
     include_expired: bool = False,
     allow_anonymous_access: bool = False,
 ) -> User | None:
-    logger.info(f"Double check user - User: {user.email if user else 'None'}")
-    logger.info(f"Double check user - Optional: {optional}")
-    logger.info(f"Double check user - Allow anonymous: {allow_anonymous_access}")
-    logger.info(f"Double check user - AUTH_TYPE: {AUTH_TYPE}")
-    logger.info(f"Double check user - DISABLE_AUTH: {DISABLE_AUTH}")
-    
     if optional:
-        logger.info("Double check user - Optional is True, returning user as-is")
         return user
 
     if user is not None:
-        logger.info(f"Double check user - User found: {user.email}, checking verification...")
         # If user attempted to authenticate, verify them, do not default
         # to anonymous access if it fails.
         if user_needs_to_be_verified() and not user.is_verified:
-            logger.warning(f"Double check user - User {user.email} is not verified")
             raise BasicAuthenticationError(
                 detail="Access denied. User is not verified.",
             )
@@ -1165,19 +1135,15 @@ async def double_check_user(
             and user.oidc_expiry < datetime.now(timezone.utc)
             and not include_expired
         ):
-            logger.warning(f"Double check user - User {user.email} OIDC token expired")
             raise BasicAuthenticationError(
                 detail="Access denied. User's OIDC token has expired.",
             )
 
-        logger.info(f"Double check user - User {user.email} passed all checks")
         return user
 
     if allow_anonymous_access:
-        logger.info("Double check user - No user but anonymous access allowed")
         return None
 
-    logger.warning("Double check user - No user found and authentication required")
     raise BasicAuthenticationError(
         detail="Access denied. User is not authenticated.",
     )
