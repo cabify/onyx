@@ -57,9 +57,8 @@ export async function fetchChatData(searchParams: {
   const requestCookies = await cookies();
   const requestHeaders = await headers();
   
-  // Debug logging for bypass auth
-  console.log("fetchChatData - Request headers:", Object.fromEntries(requestHeaders.entries()));
-  console.log("fetchChatData - X-Email header:", requestHeaders.get("X-Email") || requestHeaders.get("x-email"));
+  // Debug logging for bypass auth (without sensitive data)
+  console.log("fetchChatData - X-Email header:", requestHeaders.get("X-Email") || requestHeaders.get("x-email") || 'not present');
   
   const tasks = [
     getAuthTypeMetadataSS(),

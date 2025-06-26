@@ -55,6 +55,7 @@ from httpx_oauth.oauth2 import BaseOAuth2
 from httpx_oauth.oauth2 import OAuth2Token
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 
 from onyx.auth.api_key import get_hashed_api_key_from_request
 from onyx.auth.email_utils import send_forgot_password_email
@@ -1069,6 +1070,70 @@ async def optional_user(
     return user
 
 
+async def bypass_auth_user(
+    request: Request, async_db_session: AsyncSession = Depends(get_async_session)
+) -> User | None:
+    """
+    Simple bypass authentication based on X-Email header.
+    This will be stateless like API key auth - checks header on every request.
+    """
+    logger.info(f"Bypass auth check - Request path: {request.url.path}")
+    logger.info(f"Bypass auth check - AUTH_TYPE: {AUTH_TYPE}")
+    
+    if AUTH_TYPE != AuthType.BYPASS:
+        return None
+    
+    # Get email from X-Email header
+    email = request.headers.get("X-Email") or request.headers.get("x-email")
+    if not email:
+        logger.warning("Bypass auth: X-Email header is missing")
+        return None
+    
+    logger.info(f"Bypass auth: Authenticating user with email: {email}")
+    
+    try:
+        # Verify email domain if configured
+        verify_email_domain(email)
+        
+        # Try to get existing user
+        user = await get_user_by_email_async(email, async_db_session)
+        
+        if user:
+            logger.info(f"Bypass auth: Found existing user: {user.id} ({user.email})")
+            return user
+        
+        # Create new user if doesn't exist
+        logger.info(f"Bypass auth: Creating new user for email: {email}")
+        
+        user_db = SQLAlchemyUserDatabase[User, uuid.UUID](async_db_session, User, OAuthAccount)
+        user_manager = UserManager(user_db)
+        
+        password = generate_password()
+        hashed_password = user_manager.password_helper.hash(password)
+        
+        role = UserRole.BASIC
+        user_count = await get_user_count()
+        if user_count == 0 or email in get_default_admin_user_emails():
+            role = UserRole.ADMIN
+        
+        user_dict = {
+            "email": email,
+            "hashed_password": hashed_password,
+            "is_verified": True,
+            "role": role,
+        }
+        
+        user = await user_db.create(user_dict)
+        logger.info(f"Bypass auth: Created user {user.id} with role {user.role}")
+        return user
+        
+    except Exception as e:
+        logger.error(f"Bypass auth error for email {email}: {str(e)}")
+        import traceback
+        logger.error(f"Bypass auth traceback: {traceback.format_exc()}")
+        return None
+
+
 async def double_check_user(
     user: User | None,
     optional: bool = DISABLE_AUTH,
@@ -1429,98 +1494,12 @@ async def api_key_dep(
     return user
 
 
-async def bypass_auth_user(
-    request: Request, async_db_session: AsyncSession = Depends(get_async_session)
-) -> User | None:
-    """
-    Bypass authentication based on X-Email header.
-    If the header is missing, returns None (which will result in 403).
-    If the header exists, authenticate the user based on the provided email.
-    If the user doesn't exist, create a new user account with BASIC role.
-    """
-    # Debug logging for all requests
-    logger.info(f"Bypass auth check - Request path: {request.url.path}")
-    logger.info(f"Bypass auth check - Request headers: {dict(request.headers)}")
-    logger.info(f"Bypass auth check - AUTH_TYPE: {AUTH_TYPE}")
-    
-    if AUTH_TYPE != AuthType.BYPASS:
-        logger.info("Bypass auth: AUTH_TYPE is not BYPASS, skipping")
-        return None
-    
-    # Get email from X-Email header
-    email = request.headers.get("X-Email") or request.headers.get("x-email")
-    if not email:
-        logger.warning("Bypass auth: X-Email header is missing")
-        logger.warning(f"Available headers: {list(request.headers.keys())}")
-        return None
-    
-    logger.info(f"Bypass auth: Attempting to authenticate user with email: {email}")
-    
-    try:
-        # Verify email domain if configured
-        verify_email_domain(email)
-        
-        # Try to get existing user
-        user = get_user_by_email(email, async_db_session)
-        
-        if user:
-            logger.info(f"Bypass auth: Found existing user: {user.id} ({user.email})")
-            return user
-        
-        # Create new user if doesn't exist
-        logger.info(f"Bypass auth: Creating new user for email: {email}")
-        
-        # Get user manager to access password helper
-        user_db = SQLAlchemyUserDatabase[User, uuid.UUID](async_db_session, User, OAuthAccount)
-        user_manager = UserManager(user_db)
-        
-        # Generate a random password for the user (they won't use it)
-        password = generate_password()
-        hashed_password = user_manager.password_helper.hash(password)
-        
-        # Determine role
-        role = UserRole.BASIC
-        user_count = await get_user_count()
-        if user_count == 0 or email in get_default_admin_user_emails():
-            role = UserRole.ADMIN
-        
-        # Create user dict
-        user_dict = {
-            "email": email,
-            "hashed_password": hashed_password,
-            "is_verified": True,  # Auto-verify bypass users
-            "role": role,
-        }
-        
-        # Create the user using the user database
-        user = await user_db.create(user_dict)
-        
-        logger.info(f"Bypass auth: Successfully created user: {user.id} with role: {user.role}")
-        return user
-        
-    except Exception as e:
-        logger.error(f"Bypass auth error for email {email}: {str(e)}")
-        import traceback
-        logger.error(f"Bypass auth traceback: {traceback.format_exc()}")
-        return None
-
-
-async def bypass_auth_dependency(
-    request: Request,
-    async_db_session: AsyncSession = Depends(get_async_session),
-) -> User | None:
-    """
-    Dependency wrapper for bypass authentication.
-    Returns the authenticated user or raises HTTP 403 if authentication fails.
-    """
-    if AUTH_TYPE != AuthType.BYPASS:
-        return None
-    
-    user = await bypass_auth_user(request, async_db_session)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Authentication failed: X-Email header missing or invalid"
-        )
-    
+async def get_user_by_email_async(email: str, async_db_session: AsyncSession) -> User | None:
+    """Async version of get_user_by_email for use with AsyncSession"""
+    stmt = select(User).filter(func.lower(User.email) == func.lower(email))
+    result = await async_db_session.execute(stmt)
+    user = result.scalars().first()
     return user
+
+
+

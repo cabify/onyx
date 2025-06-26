@@ -83,7 +83,7 @@ export async function fetchSS(url: string, options?: RequestInit) {
   }
   
   console.log(`fetchSS - Making request to ${url}`);
-  console.log(`fetchSS - X-Email header to forward:`, xEmailHeader);
+  console.log(`fetchSS - X-Email header to forward:`, xEmailHeader || 'not present');
   
   const init = options || {
     credentials: "include",

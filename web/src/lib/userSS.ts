@@ -26,7 +26,7 @@ export const getAuthTypeMetadataSS = async (): Promise<AuthTypeMetadata> => {
   }
   
   console.log("getAuthTypeMetadataSS - Making request to /auth/type");
-  console.log("getAuthTypeMetadataSS - X-Email header to forward:", xEmailHeader);
+  console.log("getAuthTypeMetadataSS - X-Email header to forward:", xEmailHeader || 'not present');
   
   const res = await fetch(buildUrl("/auth/type"), {
     headers: requestHeaders,
@@ -205,8 +205,7 @@ export const getCurrentUserSS = async (): Promise<User | null> => {
     const xEmailHeader = incomingHeaders.get("X-Email") || incomingHeaders.get("x-email");
     
     console.log("getCurrentUserSS - Making request to /me");
-    console.log("getCurrentUserSS - Cookie header:", cookiesHeaders);
-    console.log("getCurrentUserSS - X-Email header to forward:", xEmailHeader);
+    console.log("getCurrentUserSS - X-Email header to forward:", xEmailHeader || 'not present');
     
     // Prepare headers to send to backend
     const requestHeaders: Record<string, string> = {
@@ -225,7 +224,6 @@ export const getCurrentUserSS = async (): Promise<User | null> => {
     });
 
     console.log("getCurrentUserSS - Response status:", response.status);
-    console.log("getCurrentUserSS - Response headers:", Object.fromEntries(response.headers.entries()));
 
     if (!response.ok) {
       console.log("getCurrentUserSS - Response not ok:", await response.text());
