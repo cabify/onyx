@@ -12,12 +12,14 @@ from typing import List
 import requests
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+)
 from pydantic import BaseModel
 from requests import JSONDecodeError
 
 from onyx.chat.prompt_builder.answer_prompt_builder import AnswerPromptBuilder
 from onyx.configs.constants import FileOrigin
-from onyx.db.engine import get_session_with_current_tenant
 from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.models import ChatFileType
 from onyx.file_store.models import InMemoryChatFile
@@ -78,6 +80,7 @@ class CustomToolCallSummary(BaseModel):
 class CustomTool(BaseTool):
     def __init__(
         self,
+        id: int,
         method_spec: MethodSpec,
         base_url: str,
         custom_headers: list[HeaderItemDict] | None = None,
@@ -87,6 +90,7 @@ class CustomTool(BaseTool):
         self._method_spec = method_spec
         self._tool_definition = self._method_spec.to_tool_definition()
         self._user_oauth_token = user_oauth_token
+        self._id = id
 
         self._name = self._method_spec.name
         self._description = self._method_spec.summary
@@ -107,6 +111,10 @@ class CustomTool(BaseTool):
 
         if self._user_oauth_token:
             self.headers["Authorization"] = f"Bearer {self._user_oauth_token}"
+
+    @property
+    def id(self) -> int:
+        return self._id
 
     @property
     def name(self) -> str:
@@ -205,27 +213,26 @@ class CustomTool(BaseTool):
     def _save_and_get_file_references(
         self, file_content: bytes | str, content_type: str
     ) -> List[str]:
-        with get_session_with_current_tenant() as db_session:
-            file_store = get_default_file_store(db_session)
+        file_store = get_default_file_store()
 
-            file_id = str(uuid.uuid4())
+        file_id = str(uuid.uuid4())
 
-            # Handle both binary and text content
-            if isinstance(file_content, str):
-                content = BytesIO(file_content.encode())
-            else:
-                content = BytesIO(file_content)
+        # Handle both binary and text content
+        if isinstance(file_content, str):
+            content = BytesIO(file_content.encode())
+        else:
+            content = BytesIO(file_content)
 
-            file_store.save_file(
-                file_name=file_id,
-                content=content,
-                display_name=file_id,
-                file_origin=FileOrigin.CHAT_UPLOAD,
-                file_type=content_type,
-                file_metadata={
-                    "content_type": content_type,
-                },
-            )
+        file_store.save_file(
+            file_id=file_id,
+            content=content,
+            display_name=file_id,
+            file_origin=FileOrigin.CHAT_UPLOAD,
+            file_type=content_type,
+            file_metadata={
+                "content_type": content_type,
+            },
+        )
 
         return [file_id]
 
@@ -328,22 +335,21 @@ class CustomTool(BaseTool):
 
         # Load files from storage
         files = []
-        with get_session_with_current_tenant() as db_session:
-            file_store = get_default_file_store(db_session)
+        file_store = get_default_file_store()
 
-            for file_id in response.tool_result.file_ids:
-                try:
-                    file_io = file_store.read_file(file_id, mode="b")
-                    files.append(
-                        InMemoryChatFile(
-                            file_id=file_id,
-                            filename=file_id,
-                            content=file_io.read(),
-                            file_type=file_type,
-                        )
+        for file_id in response.tool_result.file_ids:
+            try:
+                file_io = file_store.read_file(file_id, mode="b")
+                files.append(
+                    InMemoryChatFile(
+                        file_id=file_id,
+                        filename=file_id,
+                        content=file_io.read(),
+                        file_type=file_type,
                     )
-                except Exception:
-                    logger.exception(f"Failed to read file {file_id}")
+                )
+            except Exception:
+                logger.exception(f"Failed to read file {file_id}")
 
             # Update prompt with file content
             prompt_builder.update_user_prompt(
@@ -364,6 +370,7 @@ class CustomTool(BaseTool):
 
 
 def build_custom_tools_from_openapi_schema_and_headers(
+    tool_id: int,
     openapi_schema: dict[str, Any],
     custom_headers: list[HeaderItemDict] | None = None,
     dynamic_schema_info: DynamicSchemaInfo | None = None,
@@ -385,11 +392,13 @@ def build_custom_tools_from_openapi_schema_and_headers(
 
     url = openapi_to_url(openapi_schema)
     method_specs = openapi_to_method_specs(openapi_schema)
+
     return [
         CustomTool(
-            method_spec,
-            url,
-            custom_headers,
+            id=tool_id,
+            method_spec=method_spec,
+            base_url=url,
+            custom_headers=custom_headers,
             user_oauth_token=user_oauth_token,
         )
         for method_spec in method_specs
@@ -445,7 +454,9 @@ if __name__ == "__main__":
     validate_openapi_schema(openapi_schema)
 
     tools = build_custom_tools_from_openapi_schema_and_headers(
-        openapi_schema, dynamic_schema_info=None
+        tool_id=0,  # dummy tool id
+        openapi_schema=openapi_schema,
+        dynamic_schema_info=None,
     )
 
     openai_client = openai.OpenAI()
@@ -460,7 +471,9 @@ if __name__ == "__main__":
     choice = response.choices[0]
     if choice.message.tool_calls:
         print(choice.message.tool_calls)
-        for tool_response in tools[0].run(
-            **json.loads(choice.message.tool_calls[0].function.arguments)
-        ):
-            print(tool_response)
+        tool_call = choice.message.tool_calls[0]
+        if isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
+            for tool_response in tools[0].run(
+                **json.loads(tool_call.function.arguments)
+            ):
+                print(tool_response)

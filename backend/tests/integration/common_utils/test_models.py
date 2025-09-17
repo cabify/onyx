@@ -76,7 +76,7 @@ class DATestConnector(BaseModel):
 class SimpleTestDocument(BaseModel):
     id: str
     content: str
-    image_file_name: str | None = None
+    image_file_id: str | None = None
 
 
 class DATestCCPair(BaseModel):
@@ -117,6 +117,7 @@ class DATestDocumentSet(BaseModel):
     is_up_to_date: bool
     users: list[str] = Field(default_factory=list)
     groups: list[int] = Field(default_factory=list)
+    federated_connectors: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DATestPersona(BaseModel):
@@ -128,7 +129,6 @@ class DATestPersona(BaseModel):
     is_public: bool
     llm_filter_extraction: bool
     recency_bias: RecencyBiasSetting
-    prompt_ids: list[int]
     document_set_ids: list[int]
     tool_ids: list[int]
     llm_model_provider_override: str | None
@@ -136,6 +136,11 @@ class DATestPersona(BaseModel):
     users: list[str]
     groups: list[int]
     label_ids: list[int]
+
+    # Embedded prompt fields (no longer separate prompt_ids)
+    system_prompt: str | None = None
+    task_prompt: str | None = None
+    datetime_aware: bool = True
 
 
 class DATestChatMessage(BaseModel):
@@ -155,14 +160,26 @@ class DAQueryHistoryEntry(DATestChatSession):
     feedback_type: QAFeedbackType | None
 
 
+class ToolName(str, Enum):
+    INTERNET_SEARCH = "internet_search"
+    INTERNAL_SEARCH = "run_search"
+    IMAGE_GENERATION = "generate_image"
+
+
+class ToolResult(BaseModel):
+    tool_name: ToolName
+
+    queries: list[str] = Field(default_factory=list)
+    documents: list[SavedSearchDoc] = Field(default_factory=list)
+
+
 class StreamedResponse(BaseModel):
     full_message: str = ""
-    rephrased_query: str | None = None
-    tool_name: str | None = None
     top_documents: list[SavedSearchDoc] | None = None
-    relevance_summaries: list[dict[str, Any]] | None = None
-    tool_result: Any | None = None
-    user: str | None = None
+    used_tools: list[ToolResult] = Field(default_factory=list)
+
+    # Track heartbeat packets for image generation and other tools
+    heartbeat_packets: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DATestGatingType(str, Enum):

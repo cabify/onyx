@@ -1,7 +1,7 @@
-import React, { FC, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import CredentialSubText from "@/components/credentials/CredentialFields";
 import { ConnectionConfiguration } from "@/lib/connectors/connectors";
-import { TextFormField } from "@/components/admin/connectors/Field";
+import { TextFormField } from "@/components/Field";
 import { AdvancedOptionsToggle } from "@/components/AdvancedOptionsToggle";
 import { AccessTypeForm } from "@/components/admin/connectors/AccessTypeForm";
 import { AccessTypeGroupSelector } from "@/components/admin/connectors/AccessTypeGroupSelector";
@@ -17,12 +17,12 @@ export interface DynamicConnectionFormProps {
   currentCredential: Credential<any> | null;
 }
 
-const DynamicConnectionForm: FC<DynamicConnectionFormProps> = ({
+export default function DynamicConnectionForm({
   config,
   values,
   connector,
   currentCredential,
-}) => {
+}: DynamicConnectionFormProps) {
   const { setFieldValue } = useFormikContext<any>(); // Get Formik's context functions
 
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
@@ -69,7 +69,10 @@ const DynamicConnectionForm: FC<DynamicConnectionFormProps> = ({
           )
       )}
 
-      <AccessTypeForm connector={connector} />
+      <AccessTypeForm
+        connector={connector}
+        currentCredential={currentCredential}
+      />
       <AccessTypeGroupSelector connector={connector} />
 
       {config.advanced_values.length > 0 &&
@@ -97,6 +100,4 @@ const DynamicConnectionForm: FC<DynamicConnectionFormProps> = ({
         )}
     </>
   );
-};
-
-export default DynamicConnectionForm;
+}

@@ -1,6 +1,5 @@
 from collections import defaultdict
 from collections.abc import Callable
-from functools import partial
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -23,6 +22,7 @@ from onyx.connectors.cross_connector_utils.miscellaneous_utils import (
     get_experts_stores_representations,
 )
 from onyx.connectors.models import ConnectorFailure
+from onyx.connectors.models import ConnectorStopSignal
 from onyx.connectors.models import Document
 from onyx.connectors.models import DocumentFailure
 from onyx.connectors.models import ImageSection
@@ -41,14 +41,10 @@ from onyx.db.document import update_docs_updated_at__no_commit
 from onyx.db.document import upsert_document_by_connector_credential_pair
 from onyx.db.document import upsert_documents
 from onyx.db.document_set import fetch_document_sets_for_documents
-from onyx.db.engine import get_session_with_current_tenant
 from onyx.db.models import Document as DBDocument
 from onyx.db.models import IndexModelStatus
-from onyx.db.pg_file_store import get_pgfilestore_by_file_name
-from onyx.db.pg_file_store import read_lobj
 from onyx.db.search_settings import get_active_search_settings
-from onyx.db.tag import create_or_add_document_tag
-from onyx.db.tag import create_or_add_document_tag_list
+from onyx.db.tag import upsert_document_tags
 from onyx.db.user_documents import fetch_user_files_for_documents
 from onyx.db.user_documents import fetch_user_folders_for_documents
 from onyx.db.user_documents import update_user_file_token_count__no_commit
@@ -59,11 +55,11 @@ from onyx.document_index.interfaces import DocumentIndex
 from onyx.document_index.interfaces import DocumentMetadata
 from onyx.document_index.interfaces import IndexBatchParams
 from onyx.file_processing.image_summarization import summarize_image_with_error_handling
+from onyx.file_store.file_store import get_default_file_store
 from onyx.file_store.utils import store_user_file_plaintext
 from onyx.indexing.chunker import Chunker
 from onyx.indexing.embedder import embed_chunks_with_failure_handling
 from onyx.indexing.embedder import IndexingEmbedder
-from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from onyx.indexing.models import DocAwareChunk
 from onyx.indexing.models import DocMetadataAwareIndexChunk
 from onyx.indexing.models import IndexChunk
@@ -144,6 +140,8 @@ def _upsert_documents_in_db(
             primary_owners=get_experts_stores_representations(doc.primary_owners),
             secondary_owners=get_experts_stores_representations(doc.secondary_owners),
             from_ingestion_api=doc.from_ingestion_api,
+            external_access=doc.external_access,
+            doc_metadata=doc.doc_metadata,
         )
         document_metadata_list.append(db_doc_metadata)
 
@@ -151,24 +149,12 @@ def _upsert_documents_in_db(
 
     # Insert document content metadata
     for doc in documents:
-        for k, v in doc.metadata.items():
-            if isinstance(v, list):
-                create_or_add_document_tag_list(
-                    tag_key=k,
-                    tag_values=v,
-                    source=doc.source,
-                    document_id=doc.id,
-                    db_session=db_session,
-                )
-                continue
-
-            create_or_add_document_tag(
-                tag_key=k,
-                tag_value=v,
-                source=doc.source,
-                document_id=doc.id,
-                db_session=db_session,
-            )
+        upsert_document_tags(
+            document_id=doc.id,
+            source=doc.source,
+            metadata=doc.metadata,
+            db_session=db_session,
+        )
 
 
 def _get_aggregated_chunk_boost_factor(
@@ -290,6 +276,10 @@ def index_doc_batch_with_handler(
             enable_contextual_rag=enable_contextual_rag,
             llm=llm,
         )
+
+    except ConnectorStopSignal as e:
+        logger.warning("Connector stop signal detected in index_doc_batch_with_handler")
+        raise e
     except Exception as e:
         # don't log the batch directly, it's too much text
         document_ids = [doc.id for doc in document_batch]
@@ -462,13 +452,13 @@ def process_image_sections(documents: list[Document]) -> list[IndexingDocument]:
         # Even without LLM, we still convert to IndexingDocument with base Sections
         return [
             IndexingDocument(
-                **document.dict(),
+                **document.model_dump(),
                 processed_sections=[
                     Section(
                         text=section.text if isinstance(section, TextSection) else "",
                         link=section.link,
-                        image_file_name=(
-                            section.image_file_name
+                        image_file_id=(
+                            section.image_file_id
                             if isinstance(section, ImageSection)
                             else None
                         ),
@@ -485,46 +475,44 @@ def process_image_sections(documents: list[Document]) -> list[IndexingDocument]:
         processed_sections: list[Section] = []
 
         for section in document.sections:
-            # For ImageSection, process and create base Section with both text and image_file_name
+            # For ImageSection, process and create base Section with both text and image_file_id
             if isinstance(section, ImageSection):
                 # Default section with image path preserved - ensure text is always a string
                 processed_section = Section(
                     link=section.link,
-                    image_file_name=section.image_file_name,
+                    image_file_id=section.image_file_id,
                     text="",  # Initialize with empty string
                 )
 
                 # Try to get image summary
                 try:
-                    with get_session_with_current_tenant() as db_session:
-                        pgfilestore = get_pgfilestore_by_file_name(
-                            file_name=section.image_file_name, db_session=db_session
+                    file_store = get_default_file_store()
+
+                    file_record = file_store.read_file_record(
+                        file_id=section.image_file_id
+                    )
+                    if not file_record:
+                        logger.warning(
+                            f"Image file {section.image_file_id} not found in FileStore"
                         )
 
-                        if not pgfilestore:
-                            logger.warning(
-                                f"Image file {section.image_file_name} not found in PGFileStore"
-                            )
+                        processed_section.text = "[Image could not be processed]"
+                    else:
+                        # Get the image data
+                        image_data_io = file_store.read_file(
+                            file_id=section.image_file_id
+                        )
+                        image_data = image_data_io.read()
+                        summary = summarize_image_with_error_handling(
+                            llm=llm,
+                            image_data=image_data,
+                            context_name=file_record.display_name or "Image",
+                        )
 
-                            processed_section.text = "[Image could not be processed]"
+                        if summary:
+                            processed_section.text = summary
                         else:
-                            # Get the image data
-                            image_data_io = read_lobj(
-                                pgfilestore.lobj_oid, db_session, mode="rb"
-                            )
-                            pgfilestore_data = image_data_io.read()
-                            summary = summarize_image_with_error_handling(
-                                llm=llm,
-                                image_data=pgfilestore_data,
-                                context_name=pgfilestore.display_name or "Image",
-                            )
-
-                            if summary:
-                                processed_section.text = summary
-                            else:
-                                processed_section.text = (
-                                    "[Image could not be summarized]"
-                                )
+                            processed_section.text = "[Image could not be summarized]"
                 except Exception as e:
                     logger.error(f"Error processing image section: {e}")
                     processed_section.text = "[Error processing image]"
@@ -536,23 +524,13 @@ def process_image_sections(documents: list[Document]) -> list[IndexingDocument]:
                 processed_section = Section(
                     text=section.text or "",  # Ensure text is always a string, not None
                     link=section.link,
-                    image_file_name=None,
-                )
-                processed_sections.append(processed_section)
-
-            # If it's already a base Section (unlikely), just append it with text validation
-            else:
-                # Ensure text is always a string
-                processed_section = Section(
-                    text=section.text if section.text is not None else "",
-                    link=section.link,
-                    image_file_name=section.image_file_name,
+                    image_file_id=None,
                 )
                 processed_sections.append(processed_section)
 
         # Create IndexingDocument with original sections and processed_sections
         indexed_document = IndexingDocument(
-            **document.dict(), processed_sections=processed_sections
+            **document.model_dump(), processed_sections=processed_sections
         )
         indexed_documents.append(indexed_document)
 
@@ -841,7 +819,7 @@ def index_doc_batch(
             )
         )
 
-        doc_id_to_previous_chunk_cnt: dict[str, int | None] = {
+        doc_id_to_previous_chunk_cnt: dict[str, int] = {
             document_id: chunk_count
             for document_id, chunk_count in fetch_chunk_counts_for_documents(
                 document_ids=updatable_ids,
@@ -876,31 +854,27 @@ def index_doc_batch(
         user_file_id_to_raw_text: dict[int, str] = {}
         for document_id in updatable_ids:
             # Only calculate token counts for documents that have a user file ID
-            if (
-                document_id in doc_id_to_user_file_id
-                and doc_id_to_user_file_id[document_id] is not None
-            ):
-                user_file_id = doc_id_to_user_file_id[document_id]
-                if not user_file_id:
-                    continue
-                document_chunks = [
-                    chunk
-                    for chunk in chunks_with_embeddings
-                    if chunk.source_document.id == document_id
-                ]
-                if document_chunks:
-                    combined_content = " ".join(
-                        [chunk.content for chunk in document_chunks]
-                    )
-                    token_count = (
-                        len(llm_tokenizer.encode(combined_content))
-                        if llm_tokenizer
-                        else 0
-                    )
-                    user_file_id_to_token_count[user_file_id] = token_count
-                    user_file_id_to_raw_text[user_file_id] = combined_content
-                else:
-                    user_file_id_to_token_count[user_file_id] = None
+
+            user_file_id = doc_id_to_user_file_id.get(document_id)
+            if user_file_id is None:
+                continue
+
+            document_chunks = [
+                chunk
+                for chunk in chunks_with_embeddings
+                if chunk.source_document.id == document_id
+            ]
+            if document_chunks:
+                combined_content = " ".join(
+                    [chunk.content for chunk in document_chunks]
+                )
+                token_count = (
+                    len(llm_tokenizer.encode(combined_content)) if llm_tokenizer else 0
+                )
+                user_file_id_to_token_count[user_file_id] = token_count
+                user_file_id_to_raw_text[user_file_id] = combined_content
+            else:
+                user_file_id_to_token_count[user_file_id] = None
 
         # we're concerned about race conditions where multiple simultaneous indexings might result
         # in one set of metadata overwriting another one in vespa.
@@ -987,6 +961,15 @@ def index_doc_batch(
                 continue
             ids_to_new_updated_at[doc.id] = doc.doc_updated_at
 
+        # Store the plaintext in the file store for faster retrieval
+        # NOTE: this creates its own session to avoid committing the overall
+        # transaction.
+        for user_file_id, raw_text in user_file_id_to_raw_text.items():
+            store_user_file_plaintext(
+                user_file_id=user_file_id,
+                plaintext_content=raw_text,
+            )
+
         update_docs_updated_at__no_commit(
             ids_to_new_updated_at=ids_to_new_updated_at, db_session=db_session
         )
@@ -1017,14 +1000,6 @@ def index_doc_batch(
             document_ids=[doc.id for doc in filtered_documents],
             db_session=db_session,
         )
-        # Store the plaintext in the file store for faster retrieval
-        for user_file_id, raw_text in user_file_id_to_raw_text.items():
-            # Use the dedicated function to store plaintext
-            store_user_file_plaintext(
-                user_file_id=user_file_id,
-                plaintext_content=raw_text,
-                db_session=db_session,
-            )
 
         # save the chunk boost components to postgres
         update_chunk_boost_components__no_commit(
@@ -1032,11 +1007,12 @@ def index_doc_batch(
         )
 
         # Pause user file ccpairs
+        # TODO: investigate why nothing is done here?
 
         db_session.commit()
 
     result = IndexingPipelineResult(
-        new_docs=len([r for r in insertion_records if r.already_existed is False]),
+        new_docs=len([r for r in insertion_records if not r.already_existed]),
         total_docs=len(filtered_documents),
         total_chunks=len(access_aware_chunks),
         failures=vector_db_write_failures + embedding_failures,
@@ -1045,8 +1021,10 @@ def index_doc_batch(
     return result
 
 
-def build_indexing_pipeline(
+def run_indexing_pipeline(
     *,
+    document_batch: list[Document],
+    index_attempt_metadata: IndexAttemptMetadata,
     embedder: IndexingEmbedder,
     information_content_classification_model: InformationContentClassificationModel,
     document_index: DocumentIndex,
@@ -1054,8 +1032,7 @@ def build_indexing_pipeline(
     tenant_id: str,
     chunker: Chunker | None = None,
     ignore_time_skip: bool = False,
-    callback: IndexingHeartbeatInterface | None = None,
-) -> IndexingPipelineProtocol:
+) -> IndexingPipelineResult:
     """Builds a pipeline which takes in a list (batch) of docs and indexes them."""
     all_search_settings = get_active_search_settings(db_session)
     if (
@@ -1085,15 +1062,15 @@ def build_indexing_pipeline(
         enable_large_chunks=multipass_config.enable_large_chunks,
         enable_contextual_rag=enable_contextual_rag,
         # after every doc, update status in case there are a bunch of really long docs
-        callback=callback,
     )
 
-    return partial(
-        index_doc_batch_with_handler,
+    return index_doc_batch_with_handler(
         chunker=chunker,
         embedder=embedder,
         information_content_classification_model=information_content_classification_model,
         document_index=document_index,
+        document_batch=document_batch,
+        index_attempt_metadata=index_attempt_metadata,
         ignore_time_skip=ignore_time_skip,
         db_session=db_session,
         tenant_id=tenant_id,

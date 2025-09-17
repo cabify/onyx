@@ -6,7 +6,7 @@ import {
   ManualErrorMessage,
   SubLabel,
   ToolTipDetails,
-} from "../admin/connectors/Field";
+} from "@/components/Field";
 
 // Specifically for text
 export function AdminTextField({
@@ -164,7 +164,13 @@ export const AdminBooleanFormField = ({
         />
         {!noLabel && (
           <div>
-            <Label small={small}>{label}</Label>
+            <span
+              className={`block font-medium text-text-700 dark:text-neutral-100 ${
+                small ? "text-sm" : "text-base"
+              } cursor-pointer`}
+            >
+              {label}
+            </span>
             {subtext && <SubLabel>{subtext}</SubLabel>}
           </div>
         )}

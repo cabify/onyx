@@ -1,5 +1,4 @@
 "use client";
-import { SourceIcon } from "@/components/SourceIcon";
 import { AdminPageTitle } from "@/components/admin/Title";
 import { ConnectorIcon } from "@/components/icons/icons";
 import { SourceCategory, SourceMetadata } from "@/lib/search/interfaces";
@@ -7,43 +6,157 @@ import { listSourceMetadata } from "@/lib/sources";
 import Title from "@/components/ui/title";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useFederatedConnectors } from "@/lib/hooks";
+import {
+  FederatedConnectorDetail,
+  federatedSourceToRegularSource,
+  ValidSources,
+} from "@/lib/types";
+import useSWR from "swr";
+import { errorHandlingFetcher } from "@/lib/fetcher";
+import { buildSimilarCredentialInfoURL } from "@/app/admin/connector/[ccPairId]/lib";
+import { Credential } from "@/lib/connectors/credentials";
+import { SettingsContext } from "@/components/settings/SettingsProvider";
+import SourceTile from "@/components/SourceTile";
 
-function SourceTile({
+function SourceTileTooltipWrapper({
   sourceMetadata,
   preSelect,
+  federatedConnectors,
+  slackCredentials,
 }: {
   sourceMetadata: SourceMetadata;
   preSelect?: boolean;
+  federatedConnectors?: FederatedConnectorDetail[];
+  slackCredentials?: Credential<any>[];
 }) {
+  // Check if there's already a federated connector for this source
+  const existingFederatedConnector = useMemo(() => {
+    if (!sourceMetadata.federated || !federatedConnectors) {
+      return null;
+    }
+
+    return federatedConnectors.find(
+      (connector) =>
+        federatedSourceToRegularSource(connector.source) ===
+        sourceMetadata.internalName
+    );
+  }, [sourceMetadata, federatedConnectors]);
+
+  // For Slack specifically, check if there are existing non-federated credentials
+  const isSlackTile = sourceMetadata.internalName === ValidSources.Slack;
+  const hasExistingSlackCredentials = useMemo(() => {
+    return isSlackTile && slackCredentials && slackCredentials.length > 0;
+  }, [isSlackTile, slackCredentials]);
+
+  // Determine the URL to navigate to
+  const navigationUrl = useMemo(() => {
+    // Special logic for Slack: if there are existing credentials, use the old flow
+    if (isSlackTile && hasExistingSlackCredentials) {
+      return "/admin/connectors/slack";
+    }
+
+    // Otherwise, use the existing logic
+    if (existingFederatedConnector) {
+      return `/admin/federated/${existingFederatedConnector.id}`;
+    }
+    return sourceMetadata.adminUrl;
+  }, [
+    isSlackTile,
+    hasExistingSlackCredentials,
+    existingFederatedConnector,
+    sourceMetadata.adminUrl,
+  ]);
+
+  // Compute whether to hide the tooltip based on the provided condition
+  const shouldHideTooltip =
+    !(existingFederatedConnector && !hasExistingSlackCredentials) &&
+    !hasExistingSlackCredentials &&
+    !sourceMetadata.federated;
+
+  // If tooltip should be hidden, just render the tile as a component
+  if (shouldHideTooltip) {
+    return (
+      <SourceTile
+        sourceMetadata={sourceMetadata}
+        preSelect={preSelect}
+        navigationUrl={navigationUrl}
+        hasExistingSlackCredentials={!!hasExistingSlackCredentials}
+      />
+    );
+  }
+
   return (
-    <Link
-      className={`flex 
-        flex-col 
-        items-center 
-        justify-center 
-        p-4 
-        rounded-lg 
-        w-40 
-        cursor-pointer
-        shadow-md
-        hover:bg-accent-background-hovered
-        ${
-          preSelect
-            ? "bg-accent-background-hovered subtle-pulse"
-            : "bg-accent-background"
-        }
-      `}
-      href={sourceMetadata.adminUrl}
-    >
-      <SourceIcon sourceType={sourceMetadata.internalName} iconSize={24} />
-      <p className="font-medium text-sm mt-2">{sourceMetadata.displayName}</p>
-    </Link>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div>
+            <SourceTile
+              sourceMetadata={sourceMetadata}
+              preSelect={preSelect}
+              navigationUrl={navigationUrl}
+              hasExistingSlackCredentials={!!hasExistingSlackCredentials}
+            />
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-sm">
+          {existingFederatedConnector && !hasExistingSlackCredentials ? (
+            <p className="text-xs">
+              <strong>Federated connector already configured.</strong> Click to
+              edit the existing connector.
+            </p>
+          ) : hasExistingSlackCredentials ? (
+            <p className="text-xs">
+              <strong>Existing Slack credentials found.</strong> Click to manage
+              the traditional Slack connector.
+            </p>
+          ) : sourceMetadata.federated ? (
+            <p className="text-xs">
+              {sourceMetadata.federatedTooltip ? (
+                sourceMetadata.federatedTooltip
+              ) : (
+                <>
+                  <strong>Federated Search.</strong> This will result in greater
+                  latency and lower search quality.
+                </>
+              )}
+            </p>
+          ) : null}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
+
 export default function Page() {
   const sources = useMemo(() => listSourceMetadata(), []);
-  const [searchTerm, setSearchTerm] = useState("");
+
+  const [rawSearchTerm, setSearchTerm] = useState("");
+  const searchTerm = useDeferredValue(rawSearchTerm);
+
+  const { data: federatedConnectors } = useFederatedConnectors();
+  const settings = useContext(SettingsContext);
+
+  // Fetch Slack credentials to determine navigation behavior
+  const { data: slackCredentials } = useSWR<Credential<any>[]>(
+    buildSimilarCredentialInfoURL(ValidSources.Slack),
+    errorHandlingFetcher
+  );
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +165,7 @@ export default function Page() {
       searchInputRef.current.focus();
     }
   }, []);
+
   const filterSources = useCallback(
     (sources: SourceMetadata[]) => {
       if (!searchTerm) return sources;
@@ -65,9 +179,19 @@ export default function Page() {
     [searchTerm]
   );
 
+  const popularSources = useMemo(() => {
+    const filtered = filterSources(sources);
+    return sources.filter(
+      (source) =>
+        source.isPopular &&
+        (filtered.includes(source) ||
+          source.displayName.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+  }, [sources, filterSources, searchTerm]);
+
   const categorizedSources = useMemo(() => {
     const filtered = filterSources(sources);
-    return Object.values(SourceCategory).reduce(
+    const categories = Object.values(SourceCategory).reduce(
       (acc, category) => {
         acc[category] = sources.filter(
           (source) =>
@@ -79,7 +203,38 @@ export default function Page() {
       },
       {} as Record<SourceCategory, SourceMetadata[]>
     );
-  }, [sources, filterSources, searchTerm]);
+    // Filter out the "Other" category if show_extra_connectors is false
+    if (settings?.settings?.show_extra_connectors === false) {
+      const filteredCategories = Object.entries(categories).filter(
+        ([category]) => category !== SourceCategory.Other
+      );
+      return Object.fromEntries(filteredCategories) as Record<
+        SourceCategory,
+        SourceMetadata[]
+      >;
+    }
+    return categories;
+  }, [
+    sources,
+    filterSources,
+    searchTerm,
+    settings?.settings?.show_extra_connectors,
+  ]);
+
+  // When searching, dedupe Popular against whatever is already in results
+  const resultIds = useMemo(() => {
+    if (!searchTerm) return new Set<string>();
+    return new Set(
+      Object.values(categorizedSources)
+        .flat()
+        .map((s) => s.internalName)
+    );
+  }, [categorizedSources, searchTerm]);
+
+  const dedupedPopular = useMemo(() => {
+    if (!searchTerm) return popularSources;
+    return popularSources.filter((s) => !resultIds.has(s.internalName));
+  }, [popularSources, resultIds, searchTerm]);
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -93,7 +248,20 @@ export default function Page() {
       ) {
         const firstSource = filteredCategories[0][1][0];
         if (firstSource) {
-          window.open(firstSource.adminUrl, "_self");
+          // Check if this source has an existing federated connector
+          const existingFederatedConnector =
+            firstSource.federated && federatedConnectors
+              ? federatedConnectors.find(
+                  (connector) =>
+                    connector.source === `federated_${firstSource.internalName}`
+                )
+              : null;
+
+          const url = existingFederatedConnector
+            ? `/admin/federated/${existingFederatedConnector.id}`
+            : firstSource.adminUrl;
+
+          window.open(url, "_self");
         }
       }
     }
@@ -115,11 +283,30 @@ export default function Page() {
         type="text"
         ref={searchInputRef}
         placeholder="Search connectors..."
-        value={searchTerm}
+        value={rawSearchTerm} // keep the input bound to immediate state
         onChange={(e) => setSearchTerm(e.target.value)}
         onKeyDown={handleKeyPress}
         className="ml-1 w-96 h-9  flex-none rounded-md border border-border bg-background-50 px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
+
+      {dedupedPopular.length > 0 && (
+        <div className="mb-8">
+          <div className="flex mt-8">
+            <Title>Popular</Title>
+          </div>
+          <div className="flex flex-wrap gap-4 p-4">
+            {dedupedPopular.map((source) => (
+              <SourceTileTooltipWrapper
+                preSelect={false}
+                key={source.internalName}
+                sourceMetadata={source}
+                federatedConnectors={federatedConnectors}
+                slackCredentials={slackCredentials}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {Object.entries(categorizedSources)
         .filter(([_, sources]) => sources.length > 0)
@@ -128,15 +315,18 @@ export default function Page() {
             <div className="flex mt-8">
               <Title>{category}</Title>
             </div>
-            <p>{getCategoryDescription(category as SourceCategory)}</p>
             <div className="flex flex-wrap gap-4 p-4">
               {sources.map((source, sourceInd) => (
-                <SourceTile
+                <SourceTileTooltipWrapper
                   preSelect={
-                    searchTerm.length > 0 && categoryInd == 0 && sourceInd == 0
+                    (searchTerm?.length ?? 0) > 0 &&
+                    categoryInd == 0 &&
+                    sourceInd == 0
                   }
                   key={source.internalName}
                   sourceMetadata={source}
+                  federatedConnectors={federatedConnectors}
+                  slackCredentials={slackCredentials}
                 />
               ))}
             </div>
@@ -144,25 +334,4 @@ export default function Page() {
         ))}
     </div>
   );
-}
-
-function getCategoryDescription(category: SourceCategory): string {
-  switch (category) {
-    case SourceCategory.Messaging:
-      return "Integrate with messaging and communication platforms.";
-    case SourceCategory.ProjectManagement:
-      return "Link to project management and task tracking tools.";
-    case SourceCategory.CustomerSupport:
-      return "Connect to customer support and helpdesk systems.";
-    case SourceCategory.CodeRepository:
-      return "Integrate with code repositories and version control systems.";
-    case SourceCategory.Storage:
-      return "Connect to cloud storage and file hosting services.";
-    case SourceCategory.Wiki:
-      return "Link to wiki and knowledge base platforms.";
-    case SourceCategory.Other:
-      return "Connect to other miscellaneous knowledge sources.";
-    default:
-      return "Connect to various knowledge sources.";
-  }
 }

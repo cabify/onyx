@@ -1,5 +1,5 @@
 import { LLMProviderView } from "../configuration/llm/interfaces";
-import { Persona, StarterMessage } from "./interfaces";
+import { MinimalPersonaSnapshot, Persona, StarterMessage } from "./interfaces";
 
 interface PersonaUpsertRequest {
   name: string;
@@ -9,10 +9,8 @@ interface PersonaUpsertRequest {
   datetime_aware: boolean;
   document_set_ids: number[];
   num_chunks: number | null;
-  include_citations: boolean;
   is_public: boolean;
   recency_bias: string;
-  prompt_ids: number[];
   llm_filter_extraction: boolean;
   llm_relevance_filter: boolean | null;
   llm_model_provider_override: string | null;
@@ -37,12 +35,10 @@ export interface PersonaUpsertParameters {
   name: string;
   description: string;
   system_prompt: string;
-  existing_prompt_id: number | null;
   task_prompt: string;
   datetime_aware: boolean;
   document_set_ids: number[];
   num_chunks: number | null;
-  include_citations: boolean;
   is_public: boolean;
   llm_relevance_filter: boolean | null;
   llm_model_provider_override: string | null;
@@ -107,10 +103,8 @@ function buildPersonaUpsertRequest(
     task_prompt,
     document_set_ids,
     num_chunks,
-    include_citations,
     is_public,
     groups,
-    existing_prompt_id,
     datetime_aware,
     users,
     tool_ids,
@@ -129,7 +123,6 @@ function buildPersonaUpsertRequest(
     task_prompt,
     document_set_ids,
     num_chunks,
-    include_citations,
     is_public,
     uploaded_image_id,
     groups,
@@ -142,7 +135,6 @@ function buildPersonaUpsertRequest(
     datetime_aware,
     is_default_persona: creationRequest.is_default_persona ?? false,
     recency_bias: "base_decay",
-    prompt_ids: existing_prompt_id ? [existing_prompt_id] : [],
     llm_filter_extraction: false,
     llm_relevance_filter: creationRequest.llm_relevance_filter ?? null,
     llm_model_provider_override:
@@ -250,7 +242,10 @@ function closerToZeroNegativesFirstComparator(a: number, b: number) {
   return absA > absB ? 1 : -1;
 }
 
-export function personaComparator(a: Persona, b: Persona) {
+export function personaComparator(
+  a: MinimalPersonaSnapshot | Persona,
+  b: MinimalPersonaSnapshot | Persona
+) {
   if (a.display_priority === null && b.display_priority === null) {
     return closerToZeroNegativesFirstComparator(a.id, b.id);
   }

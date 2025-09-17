@@ -8,9 +8,8 @@ from slack_sdk.models.views import View
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.webhook import WebhookClient
 
-from onyx.chat.models import ChatOnyxBotResponse
-from onyx.chat.models import CitationInfo
-from onyx.chat.models import QADocsResponse
+from onyx.chat.models import ChatBasicResponse
+from onyx.chat.process_message import remove_answer_citations
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import SearchFeedbackType
 from onyx.configs.onyxbot_configs import DANSWER_FOLLOWUP_EMOJI
@@ -18,7 +17,7 @@ from onyx.connectors.slack.utils import expert_info_from_slack_id
 from onyx.context.search.models import SavedSearchDoc
 from onyx.db.chat import get_chat_message
 from onyx.db.chat import translate_db_message_to_chat_message_detail
-from onyx.db.engine import get_session_with_current_tenant
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.feedback import create_chat_message_feedback
 from onyx.db.feedback import create_doc_retrieval_feedback
 from onyx.db.users import get_user_by_email
@@ -50,6 +49,7 @@ from onyx.onyxbot.slack.utils import respond_in_thread_or_channel
 from onyx.onyxbot.slack.utils import TenantSocketModeClient
 from onyx.onyxbot.slack.utils import update_emote_react
 from onyx.server.query_and_chat.models import ChatMessageDetail
+from onyx.server.query_and_chat.streaming_models import CitationInfo
 from onyx.utils.logger import setup_logger
 
 
@@ -137,7 +137,10 @@ def handle_generate_answer_button(
         raise ValueError("Missing thread_ts in the payload")
 
     thread_messages = read_slack_thread(
-        channel=channel_id, thread=thread_ts, client=client.web_client
+        tenant_id=client._tenant_id,
+        channel=channel_id,
+        thread=thread_ts,
+        client=client.web_client,
     )
     # remove all assistant messages till we get to the last user message
     # we want the new answer to be generated off of the last "question" in
@@ -174,7 +177,7 @@ def handle_generate_answer_button(
                 sender_id=user_id or None,
                 email=email or None,
                 bypass_filters=True,
-                is_bot_msg=False,
+                is_slash_command=False,
                 is_bot_dm=False,
             ),
             slack_channel_config=slack_channel_config,
@@ -246,23 +249,19 @@ def handle_publish_ephemeral_message_button(
         # we need to construct the blocks.
         citation_list = _build_citation_list(chat_message_detail)
 
-        onyx_bot_answer = ChatOnyxBotResponse(
+        onyx_bot_answer = ChatBasicResponse(
             answer=chat_message_detail.message,
-            citations=citation_list,
-            chat_message_id=chat_message_id,
-            docs=QADocsResponse(
-                top_documents=(
-                    chat_message_detail.context_docs.top_documents
-                    if chat_message_detail.context_docs
-                    else []
-                ),
-                predicted_flow=None,
-                predicted_search=None,
-                applied_source_filters=None,
-                applied_time_cutoff=None,
-                recency_bias_multiplier=1.0,
+            answer_citationless=remove_answer_citations(chat_message_detail.message),
+            cited_documents={
+                citation_info.citation_num: citation_info.document_id
+                for citation_info in citation_list
+            },
+            top_documents=(
+                chat_message_detail.context_docs.top_documents
+                if chat_message_detail.context_docs
+                else []
             ),
-            llm_selected_doc_indices=None,
+            message_id=chat_message_id,
             error_msg=None,
         )
 

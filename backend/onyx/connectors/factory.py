@@ -9,6 +9,7 @@ from onyx.configs.llm_configs import get_image_extraction_and_analysis_enabled
 from onyx.connectors.airtable.airtable_connector import AirtableConnector
 from onyx.connectors.asana.connector import AsanaConnector
 from onyx.connectors.axero.connector import AxeroConnector
+from onyx.connectors.bitbucket.connector import BitbucketConnector
 from onyx.connectors.blob.connector import BlobStorageConnector
 from onyx.connectors.backstage.connector import BackstageConnector
 from onyx.connectors.bookstack.connector import BookstackConnector
@@ -34,19 +35,21 @@ from onyx.connectors.google_site.connector import GoogleSitesConnector
 from onyx.connectors.guru.connector import GuruConnector
 from onyx.connectors.highspot.connector import HighspotConnector
 from onyx.connectors.hubspot.connector import HubSpotConnector
+from onyx.connectors.imap.connector import ImapConnector
 from onyx.connectors.interfaces import BaseConnector
 from onyx.connectors.interfaces import CheckpointedConnector
 from onyx.connectors.interfaces import CredentialsConnector
 from onyx.connectors.interfaces import EventConnector
 from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.interfaces import PollConnector
+from onyx.connectors.jira.connector import JiraConnector
 from onyx.connectors.linear.connector import LinearConnector
 from onyx.connectors.loopio.connector import LoopioConnector
 from onyx.connectors.mediawiki.wiki import MediaWikiConnector
 from onyx.connectors.mock_connector.connector import MockConnector
 from onyx.connectors.models import InputType
 from onyx.connectors.notion.connector import NotionConnector
-from onyx.connectors.onyx_jira.connector import JiraConnector
+from onyx.connectors.outline.connector import OutlineConnector
 from onyx.connectors.productboard.connector import ProductboardConnector
 from onyx.connectors.salesforce.connector import SalesforceConnector
 from onyx.connectors.sharepoint.connector import SharepointConnector
@@ -61,6 +64,7 @@ from onyx.connectors.zulip.connector import ZulipConnector
 from onyx.db.connector import fetch_connector_by_id
 from onyx.db.credentials import backend_update_credential_json
 from onyx.db.credentials import fetch_credential_by_id
+from onyx.db.enums import AccessType
 from onyx.db.models import Credential
 from shared_configs.contextvars import get_current_tenant_id
 
@@ -86,6 +90,7 @@ def identify_connector_class(
         DocumentSource.GITBOOK: GitbookConnector,
         DocumentSource.GOOGLE_DRIVE: GoogleDriveConnector,
         DocumentSource.BOOKSTACK: BookstackConnector,
+        DocumentSource.OUTLINE: OutlineConnector,
         DocumentSource.CONFLUENCE: ConfluenceConnector,
         DocumentSource.JIRA: JiraConnector,
         DocumentSource.PRODUCTBOARD: ProductboardConnector,
@@ -122,6 +127,8 @@ def identify_connector_class(
         DocumentSource.AIRTABLE: AirtableConnector,
         DocumentSource.HIGHSPOT: HighspotConnector,
         DocumentSource.BACKSTAGE: BackstageConnector,
+        DocumentSource.IMAP: ImapConnector,
+        DocumentSource.BITBUCKET: BitbucketConnector,
         # just for integration tests
         DocumentSource.MOCK_CONNECTOR: MockConnector,
     }
@@ -195,6 +202,7 @@ def instantiate_connector(
 def validate_ccpair_for_user(
     connector_id: int,
     credential_id: int,
+    access_type: AccessType,
     db_session: Session,
     enforce_creation: bool = True,
 ) -> bool:
@@ -237,4 +245,6 @@ def validate_ccpair_for_user(
             return False
 
     runnable_connector.validate_connector_settings()
+    if access_type == AccessType.SYNC:
+        runnable_connector.validate_perm_sync()
     return True

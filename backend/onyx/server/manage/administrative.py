@@ -20,7 +20,7 @@ from onyx.db.connector_credential_pair import get_connector_credential_pair_for_
 from onyx.db.connector_credential_pair import (
     update_connector_credential_pair_from_id,
 )
-from onyx.db.engine import get_session
+from onyx.db.engine.sql_engine import get_session
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.feedback import fetch_docs_ranked_by_boost_for_user
 from onyx.db.feedback import update_document_boost_for_user
@@ -205,6 +205,6 @@ def create_deletion_attempt_for_connector_id(
 
     if cc_pair.connector.source == DocumentSource.FILE:
         connector = cc_pair.connector
-        file_store = get_default_file_store(db_session)
-        for file_name in connector.connector_specific_config.get("file_locations", []):
-            file_store.delete_file(file_name)
+        file_store = get_default_file_store()
+        for file_id in connector.connector_specific_config.get("file_locations", []):
+            file_store.delete_file(file_id)

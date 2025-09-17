@@ -2,13 +2,16 @@ import sys
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from typing import cast
 
 from pydantic import BaseModel
 from pydantic import model_validator
 
+from onyx.access.models import ExternalAccess
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import INDEX_SEPARATOR
 from onyx.configs.constants import RETURN_SEPARATOR
+from onyx.db.enums import IndexModelStatus
 from onyx.utils.text_processing import make_url_compatible
 
 
@@ -32,7 +35,7 @@ class Section(BaseModel):
 
     link: str | None = None
     text: str | None = None
-    image_file_name: str | None = None
+    image_file_id: str | None = None
 
 
 class TextSection(Section):
@@ -47,10 +50,10 @@ class TextSection(Section):
 class ImageSection(Section):
     """Section containing an image reference"""
 
-    image_file_name: str
+    image_file_id: str
 
     def __sizeof__(self) -> int:
-        return sys.getsizeof(self.image_file_name) + sys.getsizeof(self.link)
+        return sys.getsizeof(self.image_file_id) + sys.getsizeof(self.link)
 
 
 class BasicExpertInfo(BaseModel):
@@ -86,6 +89,9 @@ class BasicExpertInfo(BaseModel):
             return self.first_name.capitalize()
 
         return "Unknown"
+
+    def get_email(self) -> str | None:
+        return self.email or None
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, BasicExpertInfo):
@@ -123,6 +129,30 @@ class BasicExpertInfo(BaseModel):
         size += sys.getsizeof(self.email)
         return size
 
+    @classmethod
+    def from_dict(cls, model_dict: dict[str, Any]) -> "BasicExpertInfo":
+
+        first_name = cast(str, model_dict.get("FirstName"))
+        last_name = cast(str, model_dict.get("LastName"))
+        email = cast(str, model_dict.get("Email"))
+        display_name = cast(str, model_dict.get("Name"))
+
+        # Check if all fields are None
+        if (
+            first_name is None
+            and last_name is None
+            and email is None
+            and display_name is None
+        ):
+            raise ValueError("No identifying information found for user")
+
+        return cls(
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            display_name=display_name,
+        )
+
 
 class DocumentBase(BaseModel):
     """Used for Onyx ingestion api, the ID is inferred before use if not provided"""
@@ -150,6 +180,10 @@ class DocumentBase(BaseModel):
     # Anything else that may be useful that is specific to this particular connector type that other
     # parts of the code may need. If you're unsure, this can be left as None
     additional_info: Any = None
+
+    # only filled in EE for connectors w/ permission sync enabled
+    external_access: ExternalAccess | None = None
+    doc_metadata: dict[str, Any] | None = None
 
     def get_title_for_document_index(
         self,
@@ -272,7 +306,7 @@ class IndexingDocument(Document):
 
 class SlimDocument(BaseModel):
     id: str
-    perm_sync_data: Any | None = None
+    external_access: ExternalAccess | None = None
 
 
 class IndexAttemptMetadata(BaseModel):
@@ -329,3 +363,40 @@ class ConnectorFailure(BaseModel):
                 "Exactly one of 'failed_document' or 'failed_entity' must be specified."
             )
         return values
+
+
+class ConnectorStopSignal(Exception):
+    """A custom exception used to signal a stop in processing."""
+
+
+class OnyxMetadata(BaseModel):
+    # Note that doc_id cannot be overriden here as it may cause issues
+    # with the display functionalities in the UI. Ask @chris if clarification is needed.
+    source_type: DocumentSource | None = None
+    link: str | None = None
+    file_display_name: str | None = None
+    primary_owners: list[BasicExpertInfo] | None = None
+    secondary_owners: list[BasicExpertInfo] | None = None
+    doc_updated_at: datetime | None = None
+    title: str | None = None
+
+
+class DocExtractionContext(BaseModel):
+    index_name: str
+    cc_pair_id: int
+    connector_id: int
+    credential_id: int
+    source: DocumentSource
+    earliest_index_time: float
+    from_beginning: bool
+    is_primary: bool
+    should_fetch_permissions_during_indexing: bool
+    search_settings_status: IndexModelStatus
+    doc_extraction_complete_batch_num: int | None
+
+
+class DocIndexingContext(BaseModel):
+    batches_done: int
+    total_failures: int
+    net_doc_change: int
+    total_chunks: int

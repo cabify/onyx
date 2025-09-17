@@ -5,20 +5,17 @@ from pathlib import Path
 from typing import Any
 from typing import IO
 
-from sqlalchemy.orm import Session
-
 from onyx.configs.app_configs import INDEX_BATCH_SIZE
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import FileOrigin
-from onyx.connectors.cross_connector_utils.miscellaneous_utils import time_str_to_utc
+from onyx.connectors.cross_connector_utils.miscellaneous_utils import (
+    process_onyx_metadata,
+)
 from onyx.connectors.interfaces import GenerateDocumentsOutput
 from onyx.connectors.interfaces import LoadConnector
-from onyx.connectors.models import BasicExpertInfo
 from onyx.connectors.models import Document
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import TextSection
-from onyx.db.engine import get_session_with_current_tenant
-from onyx.db.pg_file_store import get_pgfilestore_by_file_name
 from onyx.file_processing.extract_file_text import extract_text_and_images
 from onyx.file_processing.extract_file_text import get_file_ext
 from onyx.file_processing.extract_file_text import is_accepted_file_ext
@@ -27,30 +24,12 @@ from onyx.file_processing.image_utils import store_image_and_create_section
 from onyx.file_store.file_store import get_default_file_store
 from onyx.utils.logger import setup_logger
 
+
 logger = setup_logger()
-
-
-def _read_file_from_filestore(
-    file_name: str,
-    db_session: Session,
-) -> IO | None:
-    """
-    Gets the content of a file from Postgres.
-    """
-    extension = get_file_ext(file_name)
-
-    # Read file from Postgres store
-    file_content = get_default_file_store(db_session).read_file(file_name, mode="b")
-
-    if is_accepted_file_ext(extension, OnyxExtensionType.All):
-        return file_content
-    logger.warning(f"Skipping file '{file_name}' with extension '{extension}'")
-    return None
 
 
 def _create_image_section(
     image_data: bytes,
-    db_session: Session,
     parent_file_name: str,
     display_name: str,
     link: str | None = None,
@@ -58,7 +37,7 @@ def _create_image_section(
 ) -> tuple[ImageSection, str | None]:
     """
     Creates an ImageSection for an image file or embedded image.
-    Stores the image in PGFileStore but does not generate a summary.
+    Stores the image in FileStore but does not generate a summary.
 
     Args:
         image_data: Raw image bytes
@@ -71,14 +50,13 @@ def _create_image_section(
         Tuple of (ImageSection, stored_file_name or None)
     """
     # Create a unique identifier for the image
-    file_name = f"{parent_file_name}_embedded_{idx}" if idx > 0 else parent_file_name
+    file_id = f"{parent_file_name}_embedded_{idx}" if idx > 0 else parent_file_name
 
     # Store the image and create a section
     try:
         section, stored_file_name = store_image_and_create_section(
-            db_session=db_session,
             image_data=image_data,
-            file_name=file_name,
+            file_id=file_id,
             display_name=display_name,
             link=link,
             file_origin=FileOrigin.CONNECTOR,
@@ -90,11 +68,12 @@ def _create_image_section(
 
 
 def _process_file(
+    file_id: str,
     file_name: str,
     file: IO[Any],
     metadata: dict[str, Any] | None,
     pdf_pass: str | None,
-    db_session: Session,
+    file_type: str | None,
 ) -> list[Document]:
     """
     Process a file and return a list of Documents.
@@ -107,71 +86,27 @@ def _process_file(
     # Get file extension and determine file type
     extension = get_file_ext(file_name)
 
-    # Fetch the DB record so we know the ID for internal URL
-    pg_record = get_pgfilestore_by_file_name(file_name=file_name, db_session=db_session)
-    if not pg_record:
-        logger.warning(f"No file record found for '{file_name}' in PG; skipping.")
-        return []
-
     if not is_accepted_file_ext(extension, OnyxExtensionType.All):
         logger.warning(
             f"Skipping file '{file_name}' with unrecognized extension '{extension}'"
         )
         return []
 
-    # Prepare doc metadata
-    file_display_name = metadata.get("file_display_name") or os.path.basename(file_name)
+    # If a zip is uploaded with a metadata file, we can process it here
+    onyx_metadata, custom_tags = process_onyx_metadata(metadata)
+    file_display_name = onyx_metadata.file_display_name or os.path.basename(file_name)
+    time_updated = onyx_metadata.doc_updated_at or datetime.now(timezone.utc)
+    primary_owners = onyx_metadata.primary_owners
+    secondary_owners = onyx_metadata.secondary_owners
+    link = onyx_metadata.link
 
-    # Timestamps
-    current_datetime = datetime.now(timezone.utc)
-    time_updated = metadata.get("time_updated", current_datetime)
-    if isinstance(time_updated, str):
-        time_updated = time_str_to_utc(time_updated)
-
-    dt_str = metadata.get("doc_updated_at")
-    final_time_updated = time_str_to_utc(dt_str) if dt_str else time_updated
-
-    # Collect owners
-    p_owner_names = metadata.get("primary_owners")
-    s_owner_names = metadata.get("secondary_owners")
-    p_owners = (
-        [BasicExpertInfo(display_name=name) for name in p_owner_names]
-        if p_owner_names
-        else None
-    )
-    s_owners = (
-        [BasicExpertInfo(display_name=name) for name in s_owner_names]
-        if s_owner_names
-        else None
-    )
-
-    # Additional tags we store as doc metadata
-    metadata_tags = {
-        k: v
-        for k, v in metadata.items()
-        if k
-        not in [
-            "document_id",
-            "time_updated",
-            "doc_updated_at",
-            "link",
-            "primary_owners",
-            "secondary_owners",
-            "filename",
-            "file_display_name",
-            "title",
-            "connector_type",
-            "pdf_password",
-            "mime_type",
-        ]
-    }
-
+    # These metadata items are not settable by the user
     source_type_str = metadata.get("connector_type")
     source_type = (
         DocumentSource(source_type_str) if source_type_str else DocumentSource.FILE
     )
 
-    doc_id = metadata.get("document_id") or f"FILE_CONNECTOR__{file_name}"
+    doc_id = f"FILE_CONNECTOR__{file_id}"
     title = metadata.get("title") or file_display_name
 
     # 1) If the file itself is an image, handle that scenario quickly
@@ -186,8 +121,7 @@ def _process_file(
         try:
             section, _ = _create_image_section(
                 image_data=image_data,
-                db_session=db_session,
-                parent_file_name=pg_record.file_name,
+                parent_file_name=file_id,
                 display_name=title,
             )
 
@@ -198,10 +132,10 @@ def _process_file(
                     source=source_type,
                     semantic_identifier=file_display_name,
                     title=title,
-                    doc_updated_at=final_time_updated,
-                    primary_owners=p_owners,
-                    secondary_owners=s_owners,
-                    metadata=metadata_tags,
+                    doc_updated_at=time_updated,
+                    primary_owners=primary_owners,
+                    secondary_owners=secondary_owners,
+                    metadata=custom_tags,
                 )
             ]
         except Exception as e:
@@ -216,39 +150,57 @@ def _process_file(
         file=file,
         file_name=file_name,
         pdf_pass=pdf_pass,
+        content_type=file_type,
     )
 
-    # Merge file-specific metadata (from file content) with provided metadata
+    # Each file may have file-specific ONYX_METADATA https://docs.onyx.app/admin/connectors/official/file
+    # If so, we should add it to any metadata processed so far
     if extraction_result.metadata:
         logger.debug(
             f"Found file-specific metadata for {file_name}: {extraction_result.metadata}"
         )
-        metadata.update(extraction_result.metadata)
+        onyx_metadata, more_custom_tags = process_onyx_metadata(
+            extraction_result.metadata
+        )
+
+        # Add file-specific tags
+        custom_tags.update(more_custom_tags)
+
+        # File-specific metadata overrides metadata processed so far
+        source_type = onyx_metadata.source_type or source_type
+        primary_owners = onyx_metadata.primary_owners or primary_owners
+        secondary_owners = onyx_metadata.secondary_owners or secondary_owners
+        time_updated = onyx_metadata.doc_updated_at or time_updated
+        file_display_name = onyx_metadata.file_display_name or file_display_name
+        title = onyx_metadata.title or onyx_metadata.file_display_name or title
+        link = onyx_metadata.link or link
 
     # Build sections: first the text as a single Section
     sections: list[TextSection | ImageSection] = []
-    link_in_meta = metadata.get("link")
     if extraction_result.text_content.strip():
-        logger.debug(f"Creating TextSection for {file_name} with link: {link_in_meta}")
+        logger.debug(f"Creating TextSection for {file_name} with link: {link}")
         sections.append(
-            TextSection(link=link_in_meta, text=extraction_result.text_content.strip())
+            TextSection(link=link, text=extraction_result.text_content.strip())
         )
 
-    # Then any extracted images from docx, etc.
+    # Then any extracted images from docx, PDFs, etc.
     for idx, (img_data, img_name) in enumerate(
         extraction_result.embedded_images, start=1
     ):
-        # Store each embedded image as a separate file in PGFileStore
+        # Store each embedded image as a separate file in FileStore
         # and create a section with the image reference
         try:
-            image_section, _ = _create_image_section(
+            image_section, stored_file_name = _create_image_section(
                 image_data=img_data,
-                db_session=db_session,
-                parent_file_name=pg_record.file_name,
+                parent_file_name=file_id,
                 display_name=f"{title} - image {idx}",
                 idx=idx,
             )
             sections.append(image_section)
+            logger.debug(
+                f"Created ImageSection for embedded image {idx} "
+                f"in {file_name}, stored as: {stored_file_name}"
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to process embedded image {idx} in {file_name}: {e}"
@@ -261,10 +213,10 @@ def _process_file(
             source=source_type,
             semantic_identifier=file_display_name,
             title=title,
-            doc_updated_at=final_time_updated,
-            primary_owners=p_owners,
-            secondary_owners=s_owners,
-            metadata=metadata_tags,
+            doc_updated_at=time_updated,
+            primary_owners=primary_owners,
+            secondary_owners=secondary_owners,
+            metadata=custom_tags,
         )
     ]
 
@@ -273,18 +225,25 @@ class LocalFileConnector(LoadConnector):
     """
     Connector that reads files from Postgres and yields Documents, including
     embedded image extraction without summarization.
+
+    file_locations are S3/Filestore UUIDs
+    file_names are the names of the files
     """
 
+    # Note: file_names is a required parameter, but should not break backwards compatibility.
+    # If add_file_names migration is not run, old file connector configs will not have file_names.
+    # file_names is only used for display purposes in the UI and file_locations is used as a fallback.
     def __init__(
         self,
         file_locations: list[Path | str],
-        zip_metadata: dict[str, Any],
+        file_names: list[str] | None = None,
+        zip_metadata: dict[str, Any] | None = None,
         batch_size: int = INDEX_BATCH_SIZE,
     ) -> None:
         self.file_locations = [str(loc) for loc in file_locations]
         self.batch_size = batch_size
         self.pdf_pass: str | None = None
-        self.zip_metadata = zip_metadata
+        self.zip_metadata = zip_metadata or {}
 
     def load_credentials(self, credentials: dict[str, Any]) -> dict[str, Any] | None:
         self.pdf_pass = credentials.get("pdf_password")
@@ -303,43 +262,40 @@ class LocalFileConnector(LoadConnector):
         """
         documents: list[Document] = []
 
-        with get_session_with_current_tenant() as db_session:
-            for file_path in self.file_locations:
-                current_datetime = datetime.now(timezone.utc)
+        for file_id in self.file_locations:
+            file_store = get_default_file_store()
+            file_record = file_store.read_file_record(file_id=file_id)
+            if not file_record:
+                # typically an unsupported extension
+                logger.warning(f"No file record found for '{file_id}' in PG; skipping.")
+                continue
 
-                file_io = _read_file_from_filestore(
-                    file_name=file_path,
-                    db_session=db_session,
-                )
-                if not file_io:
-                    # typically an unsupported extension
-                    continue
+            metadata = self._get_file_metadata(file_record.display_name)
+            file_io = file_store.read_file(file_id=file_id, mode="b")
+            new_docs = _process_file(
+                file_id=file_id,
+                file_name=file_record.display_name,
+                file=file_io,
+                metadata=metadata,
+                pdf_pass=self.pdf_pass,
+                file_type=file_record.file_type,
+            )
+            documents.extend(new_docs)
 
-                metadata = self._get_file_metadata(file_path)
-                metadata["time_updated"] = metadata.get(
-                    "time_updated", current_datetime
-                )
-                new_docs = _process_file(
-                    file_name=file_path,
-                    file=file_io,
-                    metadata=metadata,
-                    pdf_pass=self.pdf_pass,
-                    db_session=db_session,
-                )
-                documents.extend(new_docs)
-
-                if len(documents) >= self.batch_size:
-                    yield documents
-
-                    documents = []
-
-            if documents:
+            if len(documents) >= self.batch_size:
                 yield documents
+
+                documents = []
+
+        if documents:
+            yield documents
 
 
 if __name__ == "__main__":
     connector = LocalFileConnector(
-        file_locations=[os.environ["TEST_FILE"]], zip_metadata={}
+        file_locations=[os.environ["TEST_FILE"]],
+        file_names=[os.environ["TEST_FILE"]],
+        zip_metadata={},
     )
     connector.load_credentials({"pdf_password": os.environ.get("PDF_PASSWORD")})
     doc_batches = connector.load_from_state()

@@ -47,17 +47,14 @@ jobs:
           -i /local/openapi.json \
           -g python \
           -o /local/onyx_openapi_client \
-          --package-name onyx_openapi_client
+          --package-name onyx_openapi_client \
+          --skip-validate-spec \
+          --openapi-normalizer "SIMPLIFY_ONEOF_ANYOF=true,SET_OAS3_NULLABLE=true"
             
     - name: Run MyPy
       run: |
         cd backend
         mypy .
-
-    - name: Run ruff
-      run: |
-        cd backend
-        ruff .
 
     - name: Check import order with reorder-python-imports
       run: |

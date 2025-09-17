@@ -10,6 +10,8 @@ from ee.onyx.external_permissions.google_drive.doc_sync import gdrive_doc_sync
 from ee.onyx.external_permissions.google_drive.group_sync import gdrive_group_sync
 from onyx.connectors.google_drive.connector import GoogleDriveConnector
 from onyx.db.models import ConnectorCredentialPair
+from onyx.db.utils import DocumentRow
+from onyx.db.utils import SortOrder
 from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface
 from tests.daily.connectors.google_drive.consts_and_utils import ACCESS_MAPPING
 from tests.daily.connectors.google_drive.consts_and_utils import ADMIN_EMAIL
@@ -35,6 +37,7 @@ def _build_connector(
 
 def test_gdrive_perm_sync_with_real_data(
     google_drive_service_acct_connector_factory: Callable[..., GoogleDriveConnector],
+    set_ee_on: None,
 ) -> None:
     """
     Test gdrive_doc_sync and gdrive_group_sync with real data from the test drive.
@@ -70,19 +73,33 @@ def test_gdrive_perm_sync_with_real_data(
         return_value=_build_connector(google_drive_service_acct_connector_factory),
     ):
         # Call the function under test
-        doc_access_generator = gdrive_doc_sync(mock_cc_pair, lambda: [], mock_heartbeat)
+        def mock_fetch_all_docs_fn(
+            sort_order: SortOrder | None = None,
+        ) -> list[DocumentRow]:
+            return []
+
+        def mock_fetch_all_docs_ids_fn() -> list[str]:
+            return []
+
+        doc_access_generator = gdrive_doc_sync(
+            mock_cc_pair,
+            mock_fetch_all_docs_fn,
+            mock_fetch_all_docs_ids_fn,
+            mock_heartbeat,
+        )
         doc_access_list = list(doc_access_generator)
+
+    # Verify we got some results
+    assert len(doc_access_list) > 0
+    print(f"Found {len(doc_access_list)} documents with permissions")
 
     # create new connector
     with patch(
         "ee.onyx.external_permissions.google_drive.group_sync.GoogleDriveConnector",
         return_value=_build_connector(google_drive_service_acct_connector_factory),
     ):
-        external_user_groups = gdrive_group_sync("test_tenant", mock_cc_pair)
-
-    # Verify we got some results
-    assert len(doc_access_list) > 0
-    print(f"Found {len(doc_access_list)} documents with permissions")
+        external_user_group_generator = gdrive_group_sync("test_tenant", mock_cc_pair)
+        external_user_groups = list(external_user_group_generator)
 
     # map group ids to emails
     group_id_to_email_mapping: dict[str, set[str]] = defaultdict(set)

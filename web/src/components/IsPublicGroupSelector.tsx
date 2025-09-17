@@ -5,7 +5,7 @@ import Text from "@/components/ui/text";
 import { FiUsers } from "react-icons/fi";
 import { UserGroup, UserRole } from "@/lib/types";
 import { useUserGroups } from "@/lib/hooks";
-import { BooleanFormField } from "@/components/admin/connectors/Field";
+import { BooleanFormField } from "@/components/Field";
 import { useUser } from "./user/UserProvider";
 
 export type IsPublicGroupSelectorFormType = {
@@ -36,7 +36,7 @@ export const IsPublicGroupSelector = <T extends IsPublicGroupSelectorFormType>({
   useEffect(() => {
     if (user && userGroups && isPaidEnterpriseFeaturesEnabled) {
       const isUserAdmin = user.role === UserRole.ADMIN;
-      if (!isUserAdmin) {
+      if (!isUserAdmin && userGroups.length > 0) {
         formikProps.setFieldValue("is_public", false);
       }
       if (

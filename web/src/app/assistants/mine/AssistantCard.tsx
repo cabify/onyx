@@ -15,9 +15,9 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { AssistantIcon } from "@/components/assistants/AssistantIcon";
-import { Persona } from "@/app/admin/assistants/interfaces";
+import { MinimalPersonaSnapshot } from "@/app/admin/assistants/interfaces";
 import { useUser } from "@/components/user/UserProvider";
-import { useAssistants } from "@/components/context/AssistantsContext";
+import { useAssistantsContext } from "@/components/context/AssistantsContext";
 import { checkUserOwnsAssistant } from "@/lib/assistants/utils";
 import {
   Tooltip,
@@ -54,13 +54,13 @@ export const AssistantBadge = ({
 };
 
 const AssistantCard: React.FC<{
-  persona: Persona;
+  persona: MinimalPersonaSnapshot;
   pinned: boolean;
   closeModal: () => void;
 }> = ({ persona, pinned, closeModal }) => {
   const { user, toggleAssistantPinnedStatus } = useUser();
   const router = useRouter();
-  const { refreshAssistants, pinnedAssistants } = useAssistants();
+  const { refreshAssistants, pinnedAssistants } = useAssistantsContext();
   const { popup, setPopup } = usePopup();
 
   const isOwnedByUser = checkUserOwnsAssistant(user, persona);

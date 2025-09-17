@@ -6,7 +6,7 @@ import {
 import { fetchSS } from "@/lib/utilsSS";
 import {
   CCPairBasicInfo,
-  DocumentSet,
+  DocumentSetSummary,
   Tag,
   User,
   ValidSources,
@@ -15,7 +15,7 @@ import { ChatSession } from "@/app/chat/interfaces";
 import { Persona } from "@/app/admin/assistants/interfaces";
 import { fetchLLMProvidersSS } from "@/lib/llm/fetchLLMs";
 import { LLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
-import { Folder } from "@/app/chat/folders/interfaces";
+import { Folder } from "@/app/chat/components/folders/interfaces";
 import { personaComparator } from "@/app/admin/assistants/lib";
 import { cookies } from "next/headers";
 import {
@@ -31,7 +31,7 @@ interface FetchChatDataResult {
   chatSessions?: ChatSession[];
   ccPairs?: CCPairBasicInfo[];
   availableSources?: ValidSources[];
-  documentSets?: DocumentSet[];
+  documentSets?: DocumentSetSummary[];
   assistants?: Persona[];
   tags?: Tag[];
   llmProviders?: LLMProviderDescriptor[];
@@ -123,7 +123,7 @@ export async function fetchSomeChatData(
         break;
       case "documentSets":
         result.documentSets = result?.ok
-          ? ((await result.json()) as DocumentSet[])
+          ? ((await result.json()) as DocumentSetSummary[])
           : [];
         break;
       case "assistants":

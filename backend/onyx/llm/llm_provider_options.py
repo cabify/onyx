@@ -3,6 +3,8 @@ from enum import Enum
 import litellm  # type: ignore
 from pydantic import BaseModel
 
+from onyx.llm.chat_llm import VERTEX_CREDENTIALS_FILE_KWARG
+from onyx.llm.chat_llm import VERTEX_LOCATION_KWARG
 from onyx.llm.utils import model_supports_image_input
 from onyx.server.manage.llm.models import ModelConfigurationView
 
@@ -24,6 +26,7 @@ class CustomConfigKey(BaseModel):
     is_required: bool = True
     is_secret: bool = False
     key_type: CustomConfigKeyType = CustomConfigKeyType.TEXT_INPUT
+    default_value: str | None = None
 
 
 class WellKnownLLMProviderDescriptor(BaseModel):
@@ -44,6 +47,9 @@ class WellKnownLLMProviderDescriptor(BaseModel):
 
 OPENAI_PROVIDER_NAME = "openai"
 OPEN_AI_MODEL_NAMES = [
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
     "o4-mini",
     "o3-mini",
     "o1-mini",
@@ -70,7 +76,14 @@ OPEN_AI_MODEL_NAMES = [
     "gpt-3.5-turbo-16k-0613",
     "gpt-3.5-turbo-0301",
 ]
-OPEN_AI_VISIBLE_MODEL_NAMES = ["o1", "o3-mini", "gpt-4o", "gpt-4o-mini"]
+OPEN_AI_VISIBLE_MODEL_NAMES = [
+    "gpt-5",
+    "gpt-5-mini",
+    "o1",
+    "o3-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+]
 
 BEDROCK_PROVIDER_NAME = "bedrock"
 # need to remove all the weird "bedrock/eu-central-1/anthropic.claude-v1" named
@@ -79,7 +92,7 @@ BEDROCK_MODEL_NAMES = [
     model
     # bedrock_converse_models are just extensions of the bedrock_models, not sure why
     # litellm has split them into two lists :(
-    for model in litellm.bedrock_models + litellm.bedrock_converse_models
+    for model in list(litellm.bedrock_models.union(litellm.bedrock_converse_models))
     if "/" not in model and "embed" not in model
 ][::-1]
 BEDROCK_DEFAULT_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0"
@@ -108,7 +121,11 @@ VERTEXAI_DEFAULT_MODEL = "gemini-2.0-flash"
 VERTEXAI_DEFAULT_FAST_MODEL = "gemini-2.0-flash-lite"
 VERTEXAI_MODEL_NAMES = [
     # 2.5 pro models
-    "gemini-2.5-pro-exp-03-25",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    # "gemini-2.5-pro-preview-06-05",
+    # "gemini-2.5-pro-preview-05-06",
     # 2.0 flash-lite models
     VERTEXAI_DEFAULT_FAST_MODEL,
     "gemini-2.0-flash-lite-001",
@@ -120,15 +137,17 @@ VERTEXAI_MODEL_NAMES = [
     # "gemini-2.0-flash-exp-image-generation",
     # "gemini-2.0-flash-thinking-exp-01-21",
     # 1.5 pro models
-    "gemini-1.5-pro-latest",
     "gemini-1.5-pro",
     "gemini-1.5-pro-001",
     "gemini-1.5-pro-002",
     # 1.5 flash models
-    "gemini-1.5-flash-latest",
     "gemini-1.5-flash",
     "gemini-1.5-flash-001",
     "gemini-1.5-flash-002",
+    # Anthropic models
+    "claude-sonnet-4",
+    "claude-opus-4",
+    "claude-3-7-sonnet@20250219",
 ]
 VERTEXAI_VISIBLE_MODEL_NAMES = [
     VERTEXAI_DEFAULT_MODEL,
@@ -149,9 +168,6 @@ _PROVIDER_TO_VISIBLE_MODELS_MAP = {
     ANTHROPIC_PROVIDER_NAME: ANTHROPIC_VISIBLE_MODEL_NAMES,
     VERTEXAI_PROVIDER_NAME: VERTEXAI_VISIBLE_MODEL_NAMES,
 }
-
-
-CREDENTIALS_FILE_CUSTOM_CONFIG_KEY = "CREDENTIALS_FILE"
 
 
 def fetch_available_well_known_llms() -> list[WellKnownLLMProviderDescriptor]:
@@ -210,21 +226,30 @@ def fetch_available_well_known_llms() -> list[WellKnownLLMProviderDescriptor]:
                     name="AWS_ACCESS_KEY_ID",
                     display_name="AWS Access Key ID",
                     is_required=False,
-                    description="If using AWS IAM roles, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY can be left blank.",
+                    description="If using IAM role or a long-term API key, leave this field blank.",
                 ),
                 CustomConfigKey(
                     name="AWS_SECRET_ACCESS_KEY",
                     display_name="AWS Secret Access Key",
                     is_required=False,
                     is_secret=True,
-                    description="If using AWS IAM roles, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY can be left blank.",
+                    description="If using IAM role or a long-term API key, leave this field blank.",
+                ),
+                CustomConfigKey(
+                    name="AWS_BEARER_TOKEN_BEDROCK",
+                    display_name="AWS Bedrock Long-term API Key",
+                    is_required=False,
+                    is_secret=True,
+                    description=(
+                        "If using IAM role or access key, leave this field blank."
+                    ),
                 ),
             ],
             model_configurations=fetch_model_configurations_for_provider(
                 BEDROCK_PROVIDER_NAME
             ),
             default_model=BEDROCK_DEFAULT_MODEL,
-            default_fast_model=BEDROCK_DEFAULT_MODEL,
+            default_fast_model=None,
         ),
         WellKnownLLMProviderDescriptor(
             name=VERTEXAI_PROVIDER_NAME,
@@ -237,12 +262,22 @@ def fetch_available_well_known_llms() -> list[WellKnownLLMProviderDescriptor]:
             ),
             custom_config_keys=[
                 CustomConfigKey(
-                    name=CREDENTIALS_FILE_CUSTOM_CONFIG_KEY,
+                    name=VERTEX_CREDENTIALS_FILE_KWARG,
                     display_name="Credentials File",
                     description="This should be a JSON file containing some private credentials.",
                     is_required=True,
                     is_secret=False,
                     key_type=CustomConfigKeyType.FILE_INPUT,
+                ),
+                CustomConfigKey(
+                    name=VERTEX_LOCATION_KWARG,
+                    display_name="Location",
+                    description="The location of the Vertex AI model. Please refer to the "
+                    "[Vertex AI configuration docs](https://docs.onyx.app/admin/ai_models/google_ai) for all possible values.",
+                    is_required=False,
+                    is_secret=False,
+                    key_type=CustomConfigKeyType.TEXT_INPUT,
+                    default_value="us-east1",
                 ),
             ],
             default_model=VERTEXAI_DEFAULT_MODEL,
@@ -278,6 +313,7 @@ def fetch_model_configurations_for_provider(
     visible_model_names = (
         fetch_visible_model_names_for_provider_as_set(provider_name) or set()
     )
+
     return [
         ModelConfigurationView(
             name=model_name,

@@ -2,25 +2,45 @@ from collections.abc import Callable
 from collections.abc import Generator
 from typing import Optional
 from typing import Protocol
-from typing import TYPE_CHECKING
 
-# Avoid circular imports
-if TYPE_CHECKING:
-    from ee.onyx.db.external_perm import ExternalUserGroup  # noqa
-    from onyx.access.models import DocExternalAccess  # noqa
-    from onyx.db.models import ConnectorCredentialPair  # noqa
-    from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface  # noqa
+from ee.onyx.db.external_perm import ExternalUserGroup  # noqa
+from onyx.access.models import DocExternalAccess  # noqa
+from onyx.context.search.models import InferenceChunk
+from onyx.db.models import ConnectorCredentialPair  # noqa
+from onyx.db.utils import DocumentRow
+from onyx.db.utils import SortOrder
+from onyx.indexing.indexing_heartbeat import IndexingHeartbeatInterface  # noqa
 
 
 class FetchAllDocumentsFunction(Protocol):
-    """Protocol for a function that fetches all document IDs for a connector credential pair."""
+    """Protocol for a function that fetches documents for a connector credential pair.
 
-    def __call__(self) -> list[str]:
+    This protocol defines the interface for functions that retrieve documents
+    from the database, typically used in permission synchronization workflows.
+    """
+
+    def __call__(
+        self,
+        sort_order: SortOrder | None,
+    ) -> list[DocumentRow]:
         """
-        Returns a list of document IDs for a connector credential pair.
+        Fetches documents for a connector credential pair.
+        """
+        ...
 
-        This is typically used to determine which documents should no longer be
-        accessible during the document sync process.
+
+class FetchAllDocumentsIdsFunction(Protocol):
+    """Protocol for a function that fetches document IDs for a connector credential pair.
+
+    This protocol defines the interface for functions that retrieve document IDs
+    from the database, typically used in permission synchronization workflows.
+    """
+
+    def __call__(
+        self,
+    ) -> list[str]:
+        """
+        Fetches document IDs for a connector credential pair.
         """
         ...
 
@@ -28,17 +48,21 @@ class FetchAllDocumentsFunction(Protocol):
 # Defining the input/output types for the sync functions
 DocSyncFuncType = Callable[
     [
-        "ConnectorCredentialPair",
+        ConnectorCredentialPair,
         FetchAllDocumentsFunction,
-        Optional["IndexingHeartbeatInterface"],
+        FetchAllDocumentsIdsFunction,
+        Optional[IndexingHeartbeatInterface],
     ],
-    Generator["DocExternalAccess", None, None],
+    Generator[DocExternalAccess, None, None],
 ]
 
 GroupSyncFuncType = Callable[
     [
-        str,
-        "ConnectorCredentialPair",
+        str,  # tenant_id
+        ConnectorCredentialPair,  # cc_pair
     ],
-    list["ExternalUserGroup"],
+    Generator[ExternalUserGroup, None, None],
 ]
+
+# list of chunks to be censored and the user email. returns censored chunks
+CensoringFuncType = Callable[[list[InferenceChunk], str], list[InferenceChunk]]

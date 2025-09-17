@@ -9,13 +9,13 @@ import { useRouter } from "next/navigation";
 import FixedLogo from "../../components/logo/FixedLogo";
 import { SettingsContext } from "@/components/settings/SettingsProvider";
 import { useChatContext } from "@/components/context/ChatContext";
-import { HistorySidebar } from "../chat/sessionSidebar/HistorySidebar";
-import { useAssistants } from "@/components/context/AssistantsContext";
+import { HistorySidebar } from "@/components/sidebar/HistorySidebar";
 import AssistantModal from "./mine/AssistantModal";
 import { useSidebarShortcut } from "@/lib/browserUtilities";
-import { UserSettingsModal } from "../chat/modal/UserSettingsModal";
+import { UserSettingsModal } from "@/app/chat/components/modal/UserSettingsModal";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import { useUser } from "@/components/user/UserProvider";
+import { useFederatedOAuthStatus } from "@/lib/hooks/useFederatedOAuthStatus";
 
 interface SidebarWrapperProps<T extends object> {
   size?: "sm" | "lg";
@@ -35,17 +35,19 @@ export default function SidebarWrapper<T extends object>({
   const toggleSidebar = useCallback(() => {
     Cookies.set(
       SIDEBAR_TOGGLED_COOKIE_NAME,
-      String(!sidebarVisible).toLocaleLowerCase()
-    ),
-      {
-        path: "/",
-      };
+      String(!sidebarVisible).toLocaleLowerCase(),
+      { path: "/" }
+    );
     setSidebarVisible((sidebarVisible) => !sidebarVisible);
   }, [sidebarVisible]);
 
   const sidebarElementRef = useRef<HTMLDivElement>(null);
-  const { folders, openedFolders, chatSessions } = useChatContext();
-  const { assistants } = useAssistants();
+  const { folders, chatSessions, ccPairs } = useChatContext();
+  const {
+    connectors: federatedConnectors,
+    refetch: refetchFederatedConnectors,
+  } = useFederatedOAuthStatus();
+
   const explicitlyUntoggle = () => {
     setShowDocSidebar(false);
 
@@ -118,6 +120,9 @@ export default function SidebarWrapper<T extends object>({
         <UserSettingsModal
           setPopup={setPopup}
           llmProviders={llmProviders}
+          ccPairs={ccPairs}
+          federatedConnectors={federatedConnectors}
+          refetchFederatedConnectors={refetchFederatedConnectors}
           onClose={() => setUserSettingsToggled(false)}
           defaultModel={user?.preferences?.default_model!}
         />

@@ -1,11 +1,16 @@
 import io
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from googleapiclient.errors import HttpError  # type: ignore
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+from pydantic import BaseModel
 
+from onyx.access.models import ExternalAccess
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import FileOrigin
 from onyx.connectors.google_drive.constants import DRIVE_FOLDER_TYPE
@@ -16,6 +21,7 @@ from onyx.connectors.google_drive.section_extraction import get_document_section
 from onyx.connectors.google_drive.section_extraction import HEADING_DELIMITER
 from onyx.connectors.google_utils.resources import get_drive_service
 from onyx.connectors.google_utils.resources import get_google_docs_service
+from onyx.connectors.google_utils.resources import GoogleDocsService
 from onyx.connectors.google_utils.resources import GoogleDriveService
 from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import Document
@@ -23,7 +29,6 @@ from onyx.connectors.models import DocumentFailure
 from onyx.connectors.models import ImageSection
 from onyx.connectors.models import SlimDocument
 from onyx.connectors.models import TextSection
-from onyx.db.engine import get_session_with_current_tenant
 from onyx.file_processing.extract_file_text import ALL_ACCEPTED_FILE_EXTENSIONS
 from onyx.file_processing.extract_file_text import docx_to_text_and_images
 from onyx.file_processing.extract_file_text import extract_file_text
@@ -32,11 +37,12 @@ from onyx.file_processing.extract_file_text import pptx_to_text
 from onyx.file_processing.extract_file_text import read_pdf_file
 from onyx.file_processing.extract_file_text import xlsx_to_text
 from onyx.file_processing.file_validation import is_valid_image_type
-from onyx.file_processing.image_summarization import summarize_image_with_error_handling
 from onyx.file_processing.image_utils import store_image_and_create_section
-from onyx.llm.interfaces import LLM
-from onyx.utils.lazy import lazy_eval
 from onyx.utils.logger import setup_logger
+from onyx.utils.variable_functionality import (
+    fetch_versioned_implementation_with_fallback,
+)
+from onyx.utils.variable_functionality import noop_fallback
 
 logger = setup_logger()
 
@@ -46,6 +52,7 @@ SMART_CHIP_CHAR = "\ue907"
 WEB_VIEW_LINK_KEY = "webViewLink"
 
 MAX_RETRIEVER_EMAILS = 20
+CHUNK_SIZE_BUFFER = 64  # extra bytes past the limit to read
 
 # Mapping of Google Drive mime types to export formats
 GOOGLE_MIME_TYPES_TO_EXPORT = {
@@ -62,23 +69,25 @@ GOOGLE_MIME_TYPES = {
 }
 
 
-def _summarize_drive_image(
-    image_data: bytes, image_name: str, image_analysis_llm: LLM | None
-) -> str:
+class PermissionSyncContext(BaseModel):
     """
-    Summarize the given image using the provided LLM.
+    This is the information that is needed to sync permissions for a document.
     """
-    if not image_analysis_llm:
-        return ""
 
-    return (
-        summarize_image_with_error_handling(
-            llm=image_analysis_llm,
-            image_data=image_data,
-            context_name=image_name,
-        )
-        or ""
-    )
+    primary_admin_email: str
+    google_domain: str
+
+
+def onyx_document_id_from_drive_file(file: GoogleDriveFileType) -> str:
+    link = file[WEB_VIEW_LINK_KEY]
+    parsed_url = urlparse(link)
+    parsed_url = parsed_url._replace(query="")  # remove query parameters
+    spl_path = parsed_url.path.split("/")
+    if spl_path and (spl_path[-1] in ["edit", "view", "preview"]):
+        spl_path.pop()
+        parsed_url = parsed_url._replace(path="/".join(spl_path))
+    # Remove query parameters and reconstruct URL
+    return urlunparse(parsed_url)
 
 
 def is_gdrive_image_mime_type(mime_type: str) -> bool:
@@ -89,18 +98,31 @@ def is_gdrive_image_mime_type(mime_type: str) -> bool:
     return is_valid_image_type(mime_type)
 
 
-def download_request(service: GoogleDriveService, file_id: str) -> bytes:
+def download_request(
+    service: GoogleDriveService, file_id: str, size_threshold: int
+) -> bytes:
     """
     Download the file from Google Drive.
     """
     # For other file types, download the file
     # Use the correct API call for downloading files
     request = service.files().get_media(fileId=file_id)
+    return _download_request(request, file_id, size_threshold)
+
+
+def _download_request(request: Any, file_id: str, size_threshold: int) -> bytes:
     response_bytes = io.BytesIO()
-    downloader = MediaIoBaseDownload(response_bytes, request)
+    downloader = MediaIoBaseDownload(
+        response_bytes, request, chunksize=size_threshold + CHUNK_SIZE_BUFFER
+    )
     done = False
     while not done:
-        _, done = downloader.next_chunk()
+        download_progress, done = downloader.next_chunk()
+        if download_progress.resumable_progress > size_threshold:
+            logger.warning(
+                f"File {file_id} exceeds size threshold of {size_threshold}. Skipping2."
+            )
+            return bytes()
 
     response = response_bytes.getvalue()
     if not response:
@@ -113,6 +135,7 @@ def _download_and_extract_sections_basic(
     file: dict[str, str],
     service: GoogleDriveService,
     allow_images: bool,
+    size_threshold: int,
 ) -> list[TextSection | ImageSection]:
     """Extract text and images from a Google Drive file."""
     file_id = file["id"]
@@ -120,9 +143,32 @@ def _download_and_extract_sections_basic(
     mime_type = file["mimeType"]
     link = file.get(WEB_VIEW_LINK_KEY, "")
 
-    # skip images if not explicitly enabled
-    if not allow_images and is_gdrive_image_mime_type(mime_type):
-        return []
+    # For non-Google files, download the file
+    # Use the correct API call for downloading files
+    # lazy evaluation to only download the file if necessary
+    def response_call() -> bytes:
+        return download_request(service, file_id, size_threshold)
+
+    if is_gdrive_image_mime_type(mime_type):
+        # Skip images if not explicitly enabled
+        if not allow_images:
+            return []
+
+        # Store images for later processing
+        sections: list[TextSection | ImageSection] = []
+        try:
+            section, embedded_id = store_image_and_create_section(
+                image_data=response_call(),
+                file_id=file_id,
+                display_name=file_name,
+                media_type=mime_type,
+                file_origin=FileOrigin.CONNECTOR,
+                link=link,
+            )
+            sections.append(section)
+        except Exception as e:
+            logger.error(f"Failed to process image {file_name}: {e}")
+        return sections
 
     # For Google Docs, Sheets, and Slides, export as plain text
     if mime_type in GOOGLE_MIME_TYPES_TO_EXPORT:
@@ -131,13 +177,7 @@ def _download_and_extract_sections_basic(
         request = service.files().export_media(
             fileId=file_id, mimeType=export_mime_type
         )
-        response_bytes = io.BytesIO()
-        downloader = MediaIoBaseDownload(response_bytes, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
-        response = response_bytes.getvalue()
+        response = _download_request(request, file_id, size_threshold)
         if not response:
             logger.warning(f"Failed to export {file_name} as {export_mime_type}")
             return []
@@ -145,14 +185,14 @@ def _download_and_extract_sections_basic(
         text = response.decode("utf-8")
         return [TextSection(link=link, text=text)]
 
-    # For other file types, download the file
-    # Use the correct API call for downloading files
-    response_call = lazy_eval(lambda: download_request(service, file_id))
-
     # Process based on mime type
     if mime_type == "text/plain":
-        text = response_call().decode("utf-8")
-        return [TextSection(link=link, text=text)]
+        try:
+            text = response_call().decode("utf-8")
+            return [TextSection(link=link, text=text)]
+        except UnicodeDecodeError as e:
+            logger.warning(f"Failed to extract text from {file_name}: {e}")
+            return []
 
     elif (
         mime_type
@@ -174,25 +214,6 @@ def _download_and_extract_sections_basic(
         text = pptx_to_text(io.BytesIO(response_call()), file_name=file_name)
         return [TextSection(link=link, text=text)] if text else []
 
-    elif is_gdrive_image_mime_type(mime_type):
-        # For images, store them for later processing
-        sections: list[TextSection | ImageSection] = []
-        try:
-            with get_session_with_current_tenant() as db_session:
-                section, embedded_id = store_image_and_create_section(
-                    db_session=db_session,
-                    image_data=response_call(),
-                    file_name=file_id,
-                    display_name=file_name,
-                    media_type=mime_type,
-                    file_origin=FileOrigin.CONNECTOR,
-                    link=link,
-                )
-                sections.append(section)
-        except Exception as e:
-            logger.error(f"Failed to process image {file_name}: {e}")
-        return sections
-
     elif mime_type == "application/pdf":
         text, _pdf_meta, images = read_pdf_file(io.BytesIO(response_call()))
         pdf_sections: list[TextSection | ImageSection] = [
@@ -201,41 +222,30 @@ def _download_and_extract_sections_basic(
 
         # Process embedded images in the PDF
         try:
-            with get_session_with_current_tenant() as db_session:
-                for idx, (img_data, img_name) in enumerate(images):
-                    section, embedded_id = store_image_and_create_section(
-                        db_session=db_session,
-                        image_data=img_data,
-                        file_name=f"{file_id}_img_{idx}",
-                        display_name=img_name or f"{file_name} - image {idx}",
-                        file_origin=FileOrigin.CONNECTOR,
-                    )
-                    pdf_sections.append(section)
+            for idx, (img_data, img_name) in enumerate(images):
+                section, embedded_id = store_image_and_create_section(
+                    image_data=img_data,
+                    file_id=f"{file_id}_img_{idx}",
+                    display_name=img_name or f"{file_name} - image {idx}",
+                    file_origin=FileOrigin.CONNECTOR,
+                )
+                pdf_sections.append(section)
         except Exception as e:
             logger.error(f"Failed to process PDF images in {file_name}: {e}")
         return pdf_sections
 
-    else:
-        # For unsupported file types, try to extract text
-        if mime_type in [
-            "application/vnd.google-apps.video",
-            "application/vnd.google-apps.audio",
-            "application/zip",
-        ]:
-            return []
+    # Final attempt at extracting text
+    file_ext = get_file_ext(file.get("name", ""))
+    if file_ext not in ALL_ACCEPTED_FILE_EXTENSIONS:
+        logger.warning(f"Skipping file {file.get('name')} due to extension.")
+        return []
 
-        # don't download the file at all if it's an unhandled extension
-        file_ext = get_file_ext(file.get("name", ""))
-        if file_ext not in ALL_ACCEPTED_FILE_EXTENSIONS:
-            logger.warning(f"Skipping file {file.get('name')} due to extension.")
-            return []
-        # For unsupported file types, try to extract text
-        try:
-            text = extract_file_text(io.BytesIO(response_call()), file_name)
-            return [TextSection(link=link, text=text)]
-        except Exception as e:
-            logger.warning(f"Failed to extract text from {file_name}: {e}")
-            return []
+    try:
+        text = extract_file_text(io.BytesIO(response_call()), file_name)
+        return [TextSection(link=link, text=text)]
+    except Exception as e:
+        logger.warning(f"Failed to extract text from {file_name}: {e}")
+        return []
 
 
 def _find_nth(haystack: str, needle: str, n: int, start: int = 0) -> int:
@@ -307,10 +317,41 @@ def align_basic_advanced(
     return new_sections
 
 
+def _get_external_access_for_raw_gdrive_file(
+    file: GoogleDriveFileType,
+    company_domain: str,
+    retriever_drive_service: GoogleDriveService | None,
+    admin_drive_service: GoogleDriveService,
+) -> ExternalAccess:
+    """
+    Get the external access for a raw Google Drive file.
+    """
+    external_access_fn = cast(
+        Callable[
+            [GoogleDriveFileType, str, GoogleDriveService | None, GoogleDriveService],
+            ExternalAccess,
+        ],
+        fetch_versioned_implementation_with_fallback(
+            "onyx.external_permissions.google_drive.doc_sync",
+            "get_external_access_for_raw_gdrive_file",
+            fallback=noop_fallback,
+        ),
+    )
+    return external_access_fn(
+        file,
+        company_domain,
+        retriever_drive_service,
+        admin_drive_service,
+    )
+
+
 def convert_drive_item_to_document(
     creds: Any,
     allow_images: bool,
     size_threshold: int,
+    # if not specified, we will not sync permissions
+    # will also be a no-op if EE is not enabled
+    permission_sync_context: PermissionSyncContext | None,
     retriever_emails: list[str],
     file: GoogleDriveFileType,
 ) -> Document | ConnectorFailure | None:
@@ -333,7 +374,12 @@ def convert_drive_item_to_document(
             continue
         seen.add(retriever_email)
         doc_or_failure = _convert_drive_item_to_document(
-            creds, allow_images, size_threshold, retriever_email, file
+            creds,
+            allow_images,
+            size_threshold,
+            retriever_email,
+            file,
+            permission_sync_context,
         )
 
         # There are a variety of permissions-based errors that occasionally occur
@@ -376,46 +422,29 @@ def _convert_drive_item_to_document(
     size_threshold: int,
     retriever_email: str,
     file: GoogleDriveFileType,
+    # if not specified, we will not sync permissions
+    # will also be a no-op if EE is not enabled
+    permission_sync_context: PermissionSyncContext | None,
 ) -> Document | ConnectorFailure | None:
     """
     Main entry point for converting a Google Drive file => Document object.
     """
-    doc_id = file.get(WEB_VIEW_LINK_KEY, "")
     sections: list[TextSection | ImageSection] = []
+
     # Only construct these services when needed
-    drive_service = lazy_eval(
-        lambda: get_drive_service(creds, user_email=retriever_email)
-    )
-    docs_service = lazy_eval(
-        lambda: get_google_docs_service(creds, user_email=retriever_email)
-    )
+    def _get_drive_service() -> GoogleDriveService:
+        return get_drive_service(creds, user_email=retriever_email)
+
+    def _get_docs_service() -> GoogleDocsService:
+        return get_google_docs_service(creds, user_email=retriever_email)
+
+    doc_id = "unknown"
 
     try:
         # skip shortcuts or folders
         if file.get("mimeType") in [DRIVE_SHORTCUT_TYPE, DRIVE_FOLDER_TYPE]:
             logger.info("Skipping shortcut/folder.")
             return None
-
-        # If it's a Google Doc, we might do advanced parsing
-        if file.get("mimeType") == GDriveMimeType.DOC.value:
-            try:
-                # get_document_sections is the advanced approach for Google Docs
-                doc_sections = get_document_sections(
-                    docs_service=docs_service(),
-                    doc_id=file.get("id", ""),
-                )
-                if doc_sections:
-                    sections = cast(list[TextSection | ImageSection], doc_sections)
-                    if any(SMART_CHIP_CHAR in section.text for section in doc_sections):
-                        basic_sections = _download_and_extract_sections_basic(
-                            file, drive_service(), allow_images
-                        )
-                        sections = align_basic_advanced(basic_sections, doc_sections)
-
-            except Exception as e:
-                logger.warning(
-                    f"Error in advanced parsing: {e}. Falling back to basic extraction."
-                )
 
         size_str = file.get("size")
         if size_str:
@@ -430,10 +459,35 @@ def _convert_drive_item_to_document(
                     )
                     return None
 
-        # If we don't have sections yet, use the basic extraction method
-        if not sections:
+        # If it's a Google Doc, we might do advanced parsing
+        if file.get("mimeType") == GDriveMimeType.DOC.value:
+            try:
+                logger.debug(f"starting advanced parsing for {file.get('name')}")
+                # get_document_sections is the advanced approach for Google Docs
+                doc_sections = get_document_sections(
+                    docs_service=_get_docs_service(),
+                    doc_id=file.get("id", ""),
+                )
+                if doc_sections:
+                    sections = cast(list[TextSection | ImageSection], doc_sections)
+                    if any(SMART_CHIP_CHAR in section.text for section in doc_sections):
+                        logger.debug(
+                            f"found smart chips in {file.get('name')},"
+                            " aligning with basic sections"
+                        )
+                        basic_sections = _download_and_extract_sections_basic(
+                            file, _get_drive_service(), allow_images, size_threshold
+                        )
+                        sections = align_basic_advanced(basic_sections, doc_sections)
+
+            except Exception as e:
+                logger.warning(
+                    f"Error in advanced parsing: {e}. Falling back to basic extraction."
+                )
+        # Not Google Doc, attempt basic extraction
+        else:
             sections = _download_and_extract_sections_basic(
-                file, drive_service(), allow_images
+                file, _get_drive_service(), allow_images, size_threshold
             )
 
         # If we still don't have any sections, skip this file
@@ -441,7 +495,20 @@ def _convert_drive_item_to_document(
             logger.warning(f"No content extracted from {file.get('name')}. Skipping.")
             return None
 
-        doc_id = file[WEB_VIEW_LINK_KEY]
+        doc_id = onyx_document_id_from_drive_file(file)
+        external_access = (
+            _get_external_access_for_raw_gdrive_file(
+                file=file,
+                company_domain=permission_sync_context.google_domain,
+                # try both retriever_email and primary_admin_email if necessary
+                retriever_drive_service=_get_drive_service(),
+                admin_drive_service=get_drive_service(
+                    creds, user_email=permission_sync_context.primary_admin_email
+                ),
+            )
+            if permission_sync_context
+            else None
+        )
 
         # Create the document
         return Document(
@@ -457,8 +524,15 @@ def _convert_drive_item_to_document(
             doc_updated_at=datetime.fromisoformat(
                 file.get("modifiedTime", "").replace("Z", "+00:00")
             ),
+            external_access=external_access,
         )
     except Exception as e:
+        doc_id = "unknown"
+        try:
+            doc_id = onyx_document_id_from_drive_file(file)
+        except Exception as e2:
+            logger.warning(f"Error getting document id from file: {e2}")
+
         file_name = file.get("name")
         error_str = (
             f"Error converting file '{file_name}' to Document as {retriever_email}: {e}"
@@ -484,17 +558,38 @@ def _convert_drive_item_to_document(
         )
 
 
-def build_slim_document(file: GoogleDriveFileType) -> SlimDocument | None:
+def build_slim_document(
+    creds: Any,
+    file: GoogleDriveFileType,
+    # if not specified, we will not sync permissions
+    # will also be a no-op if EE is not enabled
+    permission_sync_context: PermissionSyncContext | None,
+) -> SlimDocument | None:
     if file.get("mimeType") in [DRIVE_FOLDER_TYPE, DRIVE_SHORTCUT_TYPE]:
         return None
+
+    owner_email = cast(str | None, file.get("owners", [{}])[0].get("emailAddress"))
+    external_access = (
+        _get_external_access_for_raw_gdrive_file(
+            file=file,
+            company_domain=permission_sync_context.google_domain,
+            retriever_drive_service=(
+                get_drive_service(
+                    creds,
+                    user_email=owner_email,
+                )
+                if owner_email
+                else None
+            ),
+            admin_drive_service=get_drive_service(
+                creds,
+                user_email=permission_sync_context.primary_admin_email,
+            ),
+        )
+        if permission_sync_context
+        else None
+    )
     return SlimDocument(
-        id=file[WEB_VIEW_LINK_KEY],
-        perm_sync_data={
-            "doc_id": file.get("id"),
-            "drive_id": file.get("driveId"),
-            "permissions": file.get("permissions", []),
-            "permission_ids": file.get("permissionIds", []),
-            "name": file.get("name"),
-            "owner_email": file.get("owners", [{}])[0].get("emailAddress"),
-        },
+        id=onyx_document_id_from_drive_file(file),
+        external_access=external_access,
     )

@@ -43,7 +43,7 @@ def research_object_source(
         raise ValueError("Search tool and persona must be provided for DivCon search")
 
     try:
-        instructions = graph_config.inputs.persona.prompts[0].system_prompt
+        instructions = graph_config.inputs.persona.system_prompt or ""
 
         agent_2_instructions = extract_section(
             instructions, "Agent Step 2:", "Agent Step 3:"
@@ -150,14 +150,12 @@ def research_object_source(
             ),
         )
     ]
-    # fast_llm = graph_config.tooling.fast_llm
     primary_llm = graph_config.tooling.primary_llm
-    llm = primary_llm
     # Grader
     try:
         llm_response = run_with_timeout(
             30,
-            llm.invoke,
+            primary_llm.invoke,
             prompt=msg,
             timeout_override=30,
             max_tokens=300,

@@ -11,12 +11,11 @@ from sqlalchemy import func
 from sqlalchemy import Select
 from sqlalchemy import select
 from sqlalchemy import update
-from sqlalchemy.orm import contains_eager
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
 
 from onyx.connectors.models import ConnectorFailure
-from onyx.db.engine import get_session_with_current_tenant
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import IndexingStatus
 from onyx.db.enums import IndexModelStatus
 from onyx.db.models import ConnectorCredentialPair
@@ -27,6 +26,8 @@ from onyx.server.documents.models import ConnectorCredentialPairIdentifier
 from onyx.utils.logger import setup_logger
 from onyx.utils.telemetry import optional_telemetry
 from onyx.utils.telemetry import RecordType
+
+# from sqlalchemy.sql.selectable import Select
 
 # Comment out unused imports that cause mypy errors
 # from onyx.auth.models import UserRole
@@ -95,10 +96,37 @@ def get_recent_attempts_for_cc_pair(
 
 
 def get_index_attempt(
-    db_session: Session, index_attempt_id: int
+    db_session: Session,
+    index_attempt_id: int,
+    eager_load_cc_pair: bool = False,
+    eager_load_search_settings: bool = False,
 ) -> IndexAttempt | None:
     stmt = select(IndexAttempt).where(IndexAttempt.id == index_attempt_id)
+    if eager_load_cc_pair:
+        stmt = stmt.options(
+            joinedload(IndexAttempt.connector_credential_pair).joinedload(
+                ConnectorCredentialPair.connector
+            )
+        )
+        stmt = stmt.options(
+            joinedload(IndexAttempt.connector_credential_pair).joinedload(
+                ConnectorCredentialPair.credential
+            )
+        )
+    if eager_load_search_settings:
+        stmt = stmt.options(joinedload(IndexAttempt.search_settings))
     return db_session.scalars(stmt).first()
+
+
+def count_error_rows_for_index_attempt(
+    index_attempt_id: int,
+    db_session: Session,
+) -> int:
+    return (
+        db_session.query(IndexAttemptError)
+        .filter(IndexAttemptError.index_attempt_id == index_attempt_id)
+        .count()
+    )
 
 
 def create_index_attempt(
@@ -106,12 +134,14 @@ def create_index_attempt(
     search_settings_id: int,
     db_session: Session,
     from_beginning: bool = False,
+    celery_task_id: str | None = None,
 ) -> int:
     new_attempt = IndexAttempt(
         connector_credential_pair_id=connector_credential_pair_id,
         search_settings_id=search_settings_id,
         from_beginning=from_beginning,
         status=IndexingStatus.NOT_STARTED,
+        celery_task_id=celery_task_id,
     )
     db_session.add(new_attempt)
     db_session.commit()
@@ -247,7 +277,7 @@ def mark_attempt_in_progress(
 def mark_attempt_succeeded(
     index_attempt_id: int,
     db_session: Session,
-) -> None:
+) -> IndexAttempt:
     try:
         attempt = db_session.execute(
             select(IndexAttempt)
@@ -256,6 +286,7 @@ def mark_attempt_succeeded(
         ).scalar_one()
 
         attempt.status = IndexingStatus.SUCCESS
+        attempt.celery_task_id = None
         db_session.commit()
 
         # Add telemetry for index attempt status change
@@ -267,6 +298,7 @@ def mark_attempt_succeeded(
                 "cc_pair_id": attempt.connector_credential_pair_id,
             },
         )
+        return attempt
     except Exception:
         db_session.rollback()
         raise
@@ -275,7 +307,7 @@ def mark_attempt_succeeded(
 def mark_attempt_partially_succeeded(
     index_attempt_id: int,
     db_session: Session,
-) -> None:
+) -> IndexAttempt:
     try:
         attempt = db_session.execute(
             select(IndexAttempt)
@@ -284,6 +316,7 @@ def mark_attempt_partially_succeeded(
         ).scalar_one()
 
         attempt.status = IndexingStatus.COMPLETED_WITH_ERRORS
+        attempt.celery_task_id = None
         db_session.commit()
 
         # Add telemetry for index attempt status change
@@ -295,6 +328,7 @@ def mark_attempt_partially_succeeded(
                 "cc_pair_id": attempt.connector_credential_pair_id,
             },
         )
+        return attempt
     except Exception:
         db_session.rollback()
         raise
@@ -350,6 +384,7 @@ def mark_attempt_failed(
         attempt.status = IndexingStatus.FAILED
         attempt.error_msg = failure_reason
         attempt.full_exception_trace = full_exception_trace
+        attempt.celery_task_id = None
         db_session.commit()
 
         # Add telemetry for index attempt status change
@@ -373,16 +408,22 @@ def update_docs_indexed(
     new_docs_indexed: int,
     docs_removed_from_index: int,
 ) -> None:
+    """Updates the docs_indexed and new_docs_indexed fields of an index attempt.
+    Adds the given values to the current values in the db"""
     try:
         attempt = db_session.execute(
             select(IndexAttempt)
             .where(IndexAttempt.id == index_attempt_id)
-            .with_for_update()
+            .with_for_update()  # Locks the row when we try to update
         ).scalar_one()
 
-        attempt.total_docs_indexed = total_docs_indexed
-        attempt.new_docs_indexed = new_docs_indexed
-        attempt.docs_removed_from_index = docs_removed_from_index
+        attempt.total_docs_indexed = (
+            attempt.total_docs_indexed or 0
+        ) + total_docs_indexed
+        attempt.new_docs_indexed = (attempt.new_docs_indexed or 0) + new_docs_indexed
+        attempt.docs_removed_from_index = (
+            attempt.docs_removed_from_index or 0
+        ) + docs_removed_from_index
         db_session.commit()
     except Exception:
         db_session.rollback()
@@ -541,16 +582,14 @@ def get_latest_index_attempt_for_cc_pair_id(
     return db_session.execute(stmt).scalar_one_or_none()
 
 
-def count_index_attempts_for_connector(
+def count_index_attempts_for_cc_pair(
     db_session: Session,
-    connector_id: int,
+    cc_pair_id: int,
     only_current: bool = True,
     disinclude_finished: bool = False,
 ) -> int:
-    stmt = (
-        select(IndexAttempt)
-        .join(ConnectorCredentialPair)
-        .where(ConnectorCredentialPair.connector_id == connector_id)
+    stmt = select(IndexAttempt).where(
+        IndexAttempt.connector_credential_pair_id == cc_pair_id
     )
     if disinclude_finished:
         stmt = stmt.where(
@@ -570,16 +609,14 @@ def count_index_attempts_for_connector(
 
 def get_paginated_index_attempts_for_cc_pair_id(
     db_session: Session,
-    connector_id: int,
+    cc_pair_id: int,
     page: int,
     page_size: int,
     only_current: bool = True,
     disinclude_finished: bool = False,
 ) -> list[IndexAttempt]:
-    stmt = (
-        select(IndexAttempt)
-        .join(ConnectorCredentialPair)
-        .where(ConnectorCredentialPair.connector_id == connector_id)
+    stmt = select(IndexAttempt).where(
+        IndexAttempt.connector_credential_pair_id == cc_pair_id
     )
     if disinclude_finished:
         stmt = stmt.where(
@@ -596,10 +633,6 @@ def get_paginated_index_attempts_for_cc_pair_id(
 
     # Apply pagination
     stmt = stmt.offset(page * page_size).limit(page_size)
-    stmt = stmt.options(
-        contains_eager(IndexAttempt.connector_credential_pair),
-        joinedload(IndexAttempt.error_rows),
-    )
 
     return list(db_session.execute(stmt).scalars().unique().all())
 

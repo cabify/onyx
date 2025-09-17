@@ -16,7 +16,7 @@ from typing import Literal
 from typing import Optional
 
 from onyx.configs.constants import POSTGRES_CELERY_WORKER_INDEXING_CHILD_APP_NAME
-from onyx.db.engine import SqlEngine
+from onyx.db.engine.sql_engine import SqlEngine
 from onyx.utils.logger import setup_logger
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
 from shared_configs.configs import TENANT_ID_PREFIX
@@ -153,10 +153,9 @@ class SimpleJob:
         if self._exception is None and self.queue and not self.queue.empty():
             self._exception = self.queue.get()  # Get exception from queue
 
-        if self._exception:
-            return self._exception
-
-        return f"Job with ID '{self.id}' did not report an exception."
+        return (
+            self._exception or f"Job with ID '{self.id}' did not report an exception."
+        )
 
 
 class SimpleJobClient:

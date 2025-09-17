@@ -51,6 +51,12 @@ export interface SelectOption extends Option {
   default?: string;
 }
 
+export interface MultiSelectOption extends Option {
+  type: "multiselect";
+  options?: StringWithDescription[];
+  default?: string[];
+}
+
 export interface ListOption extends Option {
   type: "list";
   default?: string[];
@@ -96,6 +102,7 @@ export interface TabOption extends Option {
       | TextOption
       | NumberOption
       | SelectOption
+      | MultiSelectOption
       | FileOption
       | StringTabOption
     )[];
@@ -113,6 +120,7 @@ export interface ConnectionConfiguration {
     | TextOption
     | NumberOption
     | SelectOption
+    | MultiSelectOption
     | FileOption
     | TabOption
   )[];
@@ -122,6 +130,7 @@ export interface ConnectionConfiguration {
     | TextOption
     | NumberOption
     | SelectOption
+    | MultiSelectOption
     | FileOption
     | TabOption
   )[];
@@ -273,6 +282,70 @@ export const connectorConfigs: Record<
       },
     ],
   },
+  bitbucket: {
+    description: "Configure Bitbucket connector",
+    subtext:
+      "Configure Bitbucket connector (Cloud only). You can index a workspace, specific projects or repositories.",
+    values: [
+      {
+        type: "text",
+        label: "Workspace",
+        name: "workspace",
+        optional: false,
+        description: `The Bitbucket workspace to index (e.g., "atlassian" from https://bitbucket.org/atlassian/workspace ).`,
+      },
+      {
+        type: "tab",
+        name: "bitbucket_mode",
+        label: "What should be indexed from Bitbucket?",
+        optional: true,
+        tabs: [
+          {
+            value: "repo",
+            label: "Specific Repositories",
+            fields: [
+              {
+                type: "text",
+                label: "Repository Slugs",
+                name: "repositories",
+                optional: false,
+                description:
+                  "For multiple repositories, enter comma-separated slugs (e.g., repo1,repo2,repo3)",
+              },
+            ],
+          },
+          {
+            value: "project",
+            label: "Project(s)",
+            fields: [
+              {
+                type: "text",
+                label: "Project Key(s)",
+                name: "projects",
+                optional: false,
+                description:
+                  "One or more Bitbucket Project Keys (comma-separated) to index all repositories in those projects (e.g., PROJ1,PROJ2)",
+              },
+            ],
+          },
+          {
+            value: "workspace",
+            label: "Workspace",
+            fields: [
+              {
+                type: "string_tab",
+                label: "Workspace",
+                name: "workspace_tab",
+                description:
+                  "This connector will index all repositories in the workspace.",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    advanced_values: [],
+  },
   gitbook: {
     description: "Configure GitBook connector",
     values: [
@@ -409,6 +482,11 @@ export const connectorConfigs: Record<
     values: [],
     advanced_values: [],
   },
+  outline: {
+    description: "Configure Outline connector",
+    values: [],
+    advanced_values: [],
+  },
   confluence: {
     description: "Configure Confluence connector",
     initialConnectorName: "cloud_name",
@@ -515,7 +593,7 @@ export const connectorConfigs: Record<
                 name: "cql_query",
                 default: "",
                 description:
-                  "IMPORTANT: We currently only support CQL queries that return objects of type 'page'. This means all CQL queries must contain 'type=page' as the only type filter. It is also important that no filters for 'lastModified' are used as it will cause issues with our connector polling logic. We will still get all attachments and comments for the pages returned by the CQL query. Any 'lastmodified' filters will be overwritten. See https://developer.atlassian.com/server/confluence/advanced-searching-using-cql/ for more details.",
+                  "IMPORTANT: We currently only support CQL queries that return objects of type 'page'. This means all CQL queries must contain 'type=page' as the only type filter. It is also important that no filters for 'lastModified' are used as it will cause issues with our connector polling logic. We will still get all attachments and comments for the pages returned by the CQL query. Any 'lastmodified' filters will be overwritten. See Atlassian's [CQL documentation](https://developer.atlassian.com/server/confluence/advanced-searching-using-cql/) for more details.",
               },
             ],
           },
@@ -571,6 +649,22 @@ export const connectorConfigs: Record<
               },
             ],
           },
+          {
+            value: "jql",
+            label: "JQL Query",
+            fields: [
+              {
+                type: "text",
+                query: "Enter the JQL query:",
+                label: "JQL Query",
+                name: "jql_query",
+                description:
+                  "A custom JQL query to filter Jira issues." +
+                  "\n\nIMPORTANT: Do not include any time-based filters in the JQL query as that will conflict with the connector's logic. Additionally, do not include ORDER BY clauses." +
+                  "\n\nSee Atlassian's [JQL documentation](https://support.atlassian.com/jira-software-cloud/docs/advanced-search-reference-jql-fields/) for more details on syntax.",
+              },
+            ],
+          },
         ],
         defaultTab: "everything",
       },
@@ -590,14 +684,55 @@ export const connectorConfigs: Record<
     description: "Configure Salesforce connector",
     values: [
       {
-        type: "list",
-        query: "Enter requested objects:",
-        label: "Requested Objects",
-        name: "requested_objects",
+        type: "tab",
+        name: "salesforce_config_type",
+        label: "Configuration Type",
         optional: true,
-        description: `Specify the Salesforce object types you want us to index. If unsure, don't specify any objects and Onyx will default to indexing by 'Account'.
-
-Hint: Use the singular form of the object name (e.g., 'Opportunity' instead of 'Opportunities').`,
+        tabs: [
+          {
+            value: "simple",
+            label: "Simple",
+            fields: [
+              {
+                type: "list",
+                query: "Enter requested objects:",
+                label: "Requested Objects",
+                name: "requested_objects",
+                optional: true,
+                description:
+                  "Specify the Salesforce object types you want us to index. If unsure, don't specify any objects and Onyx will default to indexing by 'Account'." +
+                  "\n\nHint: Use the singular form of the object name (e.g., 'Opportunity' instead of 'Opportunities').",
+              },
+            ],
+          },
+          {
+            value: "advanced",
+            label: "Advanced",
+            fields: [
+              {
+                type: "text",
+                query: "Enter custom query config:",
+                label: "Custom Query Config",
+                name: "custom_query_config",
+                optional: true,
+                isTextArea: true,
+                description:
+                  "Enter a JSON configuration that precisely defines which fields and child objects to index. This gives you complete control over the data structure." +
+                  "\n\nExample:" +
+                  "\n{" +
+                  '\n  "Account": {' +
+                  '\n    "fields": ["Id", "Name", "Industry"],' +
+                  '\n    "associations": {' +
+                  '\n      "Contact": ["Id", "FirstName", "LastName", "Email"]' +
+                  "\n    }" +
+                  "\n  }" +
+                  "\n}" +
+                  "\n\n[See our docs](https://docs.onyx.app/admin/connectors/official/salesforce) for more details.",
+              },
+            ],
+          },
+        ],
+        defaultTab: "simple",
       },
     ],
     advanced_values: [],
@@ -612,14 +747,33 @@ Hint: Use the singular form of the object name (e.g., 'Opportunity' instead of '
         name: "sites",
         optional: true,
         description: `• If no sites are specified, all sites in your organization will be indexed (Sites.Read.All permission required).
-
-• Specifying 'https://onyxai.sharepoint.com/sites/support' for example will only index documents within this site.
-
-• Specifying 'https://onyxai.sharepoint.com/sites/support/subfolder' for example will only index documents within this folder.
+• Specifying 'https://onyxai.sharepoint.com/sites/support' for example only indexes this site.
+• Specifying 'https://onyxai.sharepoint.com/sites/support/subfolder' for example only indexes this folder.
 `,
       },
     ],
-    advanced_values: [],
+    advanced_values: [
+      {
+        type: "checkbox",
+        query: "Index Documents:",
+        label: "Index Documents",
+        name: "include_site_documents",
+        optional: true,
+        default: true,
+        description:
+          "Index documents of all SharePoint libraries or folders defined above.",
+      },
+      {
+        type: "checkbox",
+        query: "Index ASPX Sites:",
+        label: "Index ASPX Sites",
+        name: "include_site_pages",
+        optional: true,
+        default: true,
+        description:
+          "Index aspx-pages of all SharePoint sites defined above, even if a library or folder is specified.",
+      },
+    ],
   },
   teams: {
     description: "Configure Teams connector",
@@ -757,7 +911,7 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
       {
         type: "file",
         query: "Enter file locations:",
-        label: "File Locations",
+        label: "Files",
         name: "file_locations",
         optional: false,
       },
@@ -801,7 +955,24 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
   },
   hubspot: {
     description: "Configure HubSpot connector",
-    values: [],
+    values: [
+      {
+        type: "multiselect",
+        query: "Select which HubSpot objects to index:",
+        label: "Object Types",
+        name: "object_types",
+        options: [
+          { name: "Tickets", value: "tickets" },
+          { name: "Companies", value: "companies" },
+          { name: "Deals", value: "deals" },
+          { name: "Contacts", value: "contacts" },
+        ],
+        default: ["tickets", "companies", "deals", "contacts"],
+        description:
+          "Choose which HubSpot object types to index. All types are selected by default.",
+        optional: false,
+      },
+    ],
     advanced_values: [],
   },
   document360: {
@@ -1343,10 +1514,42 @@ For example, specifying .*-support.* as a "channel" will cause the connector to 
     ],
     advanced_values: [],
   },
+  imap: {
+    description: "Configure Email connector",
+    values: [
+      {
+        type: "text",
+        query: "Enter the IMAP server host:",
+        label: "IMAP Server Host",
+        name: "host",
+        optional: false,
+        description:
+          "The IMAP server hostname (e.g., imap.gmail.com, outlook.office365.com)",
+      },
+      {
+        type: "number",
+        query: "Enter the IMAP server port:",
+        label: "IMAP Server Port",
+        name: "port",
+        optional: true,
+        default: 993,
+        description: "The IMAP server port (default: 993 for SSL)",
+      },
+      {
+        type: "list",
+        query: "Enter mailboxes to include:",
+        label: "Mailboxes",
+        name: "mailboxes",
+        optional: true,
+        description:
+          "Specify mailboxes to index (e.g., INBOX, Sent, Drafts). Leave empty to index all mailboxes.",
+      },
+    ],
+    advanced_values: [],
+  },
 };
 export function createConnectorInitialValues(
-  connector: ConfigurableSources,
-  currentCredential: Credential<any> | null = null
+  connector: ConfigurableSources
 ): Record<string, any> & AccessTypeGroupSelectorFormType {
   const configuration = connectorConfigs[connector];
 
@@ -1360,17 +1563,10 @@ export function createConnectorInitialValues(
           acc[field.name] = null;
         } else if (field.type === "list") {
           acc[field.name] = field.default || [];
+        } else if (field.type === "multiselect") {
+          acc[field.name] = field.default || [];
         } else if (field.type === "checkbox") {
-          // Special case for include_files_shared_with_me when using service account
-          if (
-            field.name === "include_files_shared_with_me" &&
-            currentCredential &&
-            !currentCredential.credential_json?.google_tokens
-          ) {
-            acc[field.name] = true;
-          } else {
-            acc[field.name] = field.default || false;
-          }
+          acc[field.name] = field.default || false;
         } else if (field.default !== undefined) {
           acc[field.name] = field.default;
         }
@@ -1396,11 +1592,13 @@ export function createConnectorValidationSchema(
             ? Yup.string()
             : field.type === "list"
               ? Yup.array().of(Yup.string())
-              : field.type === "checkbox"
-                ? Yup.boolean()
-                : field.type === "file"
-                  ? Yup.mixed()
-                  : Yup.string();
+              : field.type === "multiselect"
+                ? Yup.array().of(Yup.string())
+                : field.type === "checkbox"
+                  ? Yup.boolean()
+                  : field.type === "file"
+                    ? Yup.mixed()
+                    : Yup.string();
 
         if (!field.optional) {
           schema = schema.required(`${field.label} is required`);
@@ -1413,14 +1611,20 @@ export function createConnectorValidationSchema(
     ),
     // These are advanced settings
     indexingStart: Yup.string().nullable(),
-    pruneFreq: Yup.number().min(0, "Prune frequency must be non-negative"),
-    refreshFreq: Yup.number().min(0, "Refresh frequency must be non-negative"),
+    pruneFreq: Yup.number().min(
+      0.083,
+      "Prune frequency must be at least 0.083 hours (5 minutes)"
+    ),
+    refreshFreq: Yup.number().min(
+      1,
+      "Refresh frequency must be at least 1 minute"
+    ),
   });
 
   return object;
 }
 
-export const defaultPruneFreqDays = 30; // 30 days
+export const defaultPruneFreqHours = 720; // 30 days in hours
 export const defaultRefreshFreqMinutes = 30; // 30 minutes
 
 // CONNECTORS
@@ -1478,6 +1682,12 @@ export interface GitlabConfig {
   include_issues: boolean;
 }
 
+export interface BitbucketConfig {
+  workspace: string;
+  repositories?: string;
+  projects?: string;
+}
+
 export interface GoogleDriveConfig {
   include_shared_drives?: boolean;
   shared_drive_urls?: string;
@@ -1489,6 +1699,8 @@ export interface GoogleDriveConfig {
 export interface GmailConfig {}
 
 export interface BookstackConfig {}
+
+export interface OutlineConfig {}
 
 export interface ConfluenceConfig {
   wiki_base: string;
@@ -1503,6 +1715,7 @@ export interface JiraConfig {
   jira_project_url: string;
   project_key?: string;
   comment_email_blacklist?: string[];
+  jql_query?: string;
 }
 
 export interface SalesforceConfig {
@@ -1511,6 +1724,8 @@ export interface SalesforceConfig {
 
 export interface SharepointConfig {
   sites?: string[];
+  include_site_pages?: boolean;
+  include_site_documents?: boolean;
 }
 
 export interface TeamsConfig {
@@ -1554,6 +1769,7 @@ export interface LoopioConfig {
 
 export interface FileConfig {
   file_locations: string[];
+  file_names: string[];
   zip_metadata: Record<string, any>;
 }
 
@@ -1566,7 +1782,9 @@ export interface NotionConfig {
   root_page_id?: string;
 }
 
-export interface HubSpotConfig {}
+export interface HubSpotConfig {
+  object_types?: string[];
+}
 
 export interface Document360Config {
   workspace: string;
@@ -1645,3 +1863,9 @@ export interface MediaWikiConfig extends MediaWikiBaseConfig {
 }
 
 export interface WikipediaConfig extends MediaWikiBaseConfig {}
+
+export interface ImapConfig {
+  host: string;
+  port?: number;
+  mailboxes?: string[];
+}

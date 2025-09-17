@@ -10,7 +10,7 @@ from onyx.connectors.mock_connector.connector import MockConnectorCheckpoint
 from onyx.connectors.models import ConnectorFailure
 from onyx.connectors.models import EntityFailure
 from onyx.connectors.models import InputType
-from onyx.db.engine import get_session_context_manager
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import IndexingStatus
 from tests.integration.common_utils.constants import MOCK_CONNECTOR_SERVER_HOST
 from tests.integration.common_utils.constants import MOCK_CONNECTOR_SERVER_PORT
@@ -83,14 +83,14 @@ def test_mock_connector_basic_flow(
     assert finished_index_attempt.status == IndexingStatus.SUCCESS
 
     # Verify results
-    with get_session_context_manager() as db_session:
-        documents = DocumentManager.fetch_documents_for_cc_pair(
+    with get_session_with_current_tenant() as db_session:
+        chunks = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,
             vespa_client=vespa_client,
         )
-    assert len(documents) == 1
-    assert documents[0].id == test_doc.id
+    assert len(chunks) == 1
+    assert chunks[0].id == test_doc.id
 
     errors = IndexAttemptManager.get_index_attempt_errors_for_cc_pair(
         cc_pair_id=cc_pair.id,
@@ -156,7 +156,7 @@ def test_mock_connector_with_failures(
     assert finished_index_attempt.status == IndexingStatus.COMPLETED_WITH_ERRORS
 
     # Verify results: doc1 should be indexed and doc2 should have an error entry
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         documents = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,
@@ -247,7 +247,7 @@ def test_mock_connector_failure_recovery(
     assert finished_index_attempt.status == IndexingStatus.COMPLETED_WITH_ERRORS
 
     # Verify initial state: doc1 indexed, doc2 failed
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         documents = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,
@@ -311,7 +311,7 @@ def test_mock_connector_failure_recovery(
     assert finished_second_index_attempt.status == IndexingStatus.SUCCESS
 
     # Verify both documents are now indexed
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         documents = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,
@@ -343,8 +343,6 @@ def test_mock_connector_checkpoint_recovery(
     """Test that checkpointing works correctly when an unhandled exception occurs
     and that subsequent runs pick up from the last successful checkpoint."""
     # Create test documents
-    # Create 100 docs for first batch, this is needed to get past the
-    # `_NUM_DOCS_INDEXED_TO_BE_VALID_CHECKPOINT` logic in `get_latest_valid_checkpoint`.
     docs_batch_1 = [create_test_document() for _ in range(100)]
     doc2 = create_test_document()
     doc3 = create_test_document()
@@ -415,16 +413,19 @@ def test_mock_connector_checkpoint_recovery(
     assert finished_index_attempt.status == IndexingStatus.FAILED
 
     # Verify initial state: both docs should be indexed
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         documents = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,
             vespa_client=vespa_client,
         )
-    assert len(documents) == 101  # 100 docs from first batch + doc2
-    document_ids = {doc.id for doc in documents}
-    assert doc2.id in document_ids
-    assert all(doc.id in document_ids for doc in docs_batch_1)
+    # This is no longer guaranteed because docfetching and docprocessing are decoupled!
+    # Some batches may not be processed when docfetching fails, but they should still stick around
+    # in the filestore and be ready for the next run.
+    # assert len(documents) == 101  # 100 docs from first batch + doc2
+    # document_ids = {doc.id for doc in documents}
+    # assert doc2.id in document_ids
+    # assert all(doc.id in document_ids for doc in docs_batch_1)
 
     # Get the checkpoints that were sent to the mock server
     response = mock_server_client.get("/get-checkpoints")
@@ -486,7 +487,7 @@ def test_mock_connector_checkpoint_recovery(
     assert finished_recovery_attempt.status == IndexingStatus.SUCCESS
 
     # Verify results
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         documents = DocumentManager.fetch_documents_for_cc_pair(
             cc_pair_id=cc_pair.id,
             db_session=db_session,

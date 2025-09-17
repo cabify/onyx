@@ -5,7 +5,7 @@ from slack_sdk.errors import SlackApiError
 
 from onyx.configs.onyxbot_configs import DANSWER_BOT_FEEDBACK_REMINDER
 from onyx.configs.onyxbot_configs import DANSWER_REACT_EMOJI
-from onyx.db.engine import get_session_with_current_tenant
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.models import SlackChannelConfig
 from onyx.db.users import add_slack_user_if_not_exists
 from onyx.onyxbot.slack.blocks import get_feedback_reminder_blocks
@@ -28,7 +28,7 @@ logger_base = setup_logger()
 
 
 def send_msg_ack_to_user(details: SlackMessageInfo, client: WebClient) -> None:
-    if details.is_bot_msg and details.sender_id:
+    if details.is_slash_command and details.sender_id:
         respond_in_thread_or_channel(
             client=client,
             channel=details.channel_to_respond,
@@ -124,11 +124,11 @@ def handle_message(
     messages = message_info.thread_messages
     sender_id = message_info.sender_id
     bypass_filters = message_info.bypass_filters
-    is_bot_msg = message_info.is_bot_msg
+    is_slash_command = message_info.is_slash_command
     is_bot_dm = message_info.is_bot_dm
 
     action = "slack_message"
-    if is_bot_msg:
+    if is_slash_command:
         action = "slack_slash_message"
     elif bypass_filters:
         action = "slack_tag_message"
@@ -138,12 +138,10 @@ def handle_message(
 
     document_set_names: list[str] | None = None
     persona = slack_channel_config.persona if slack_channel_config else None
-    prompt = None
     if persona:
         document_set_names = [
             document_set.name for document_set in persona.document_sets
         ]
-        prompt = persona.prompts[0] if persona.prompts else None
 
     respond_tag_only = False
     respond_member_group_list = None
@@ -170,19 +168,15 @@ def handle_message(
         respond_tag_only = channel_conf.get("respond_tag_only") or False
         respond_member_group_list = channel_conf.get("respond_member_group_list", None)
 
-    # NOTE: always respond in the DMs, as long the default config is not disabled.
-    if respond_tag_only and not bypass_filters and not is_bot_dm:
-        logger.info(
-            "Skipping message since the channel is configured such that "
-            "OnyxBot only responds to tags"
-        )
+    # Only default config can be disabled.
+    # If channel config is disabled, bot should not respond to this message (including DMs)
+    if slack_channel_config.channel_config.get("disabled"):
+        logger.info("Skipping message: OnyxBot is disabled for this channel")
         return False
 
-    if slack_channel_config.channel_config.get("disabled") and not bypass_filters:
-        logger.info(
-            "Skipping message since the channel is configured such that "
-            "OnyxBot is disabled"
-        )
+    # If bot should only respond to tags and is not tagged nor in a DM, skip message
+    if respond_tag_only and not bypass_filters and not is_bot_dm:
+        logger.info("Skipping message: OnyxBot only responds to tags in this channel")
         return False
 
     # List of user id to send message to, if None, send to everyone in channel
@@ -201,7 +195,7 @@ def handle_message(
 
     # If configured to respond to team members only, then cannot be used with a /OnyxBot command
     # which would just respond to the sender
-    if send_to and is_bot_msg:
+    if send_to and is_slash_command:
         if sender_id:
             respond_in_thread_or_channel(
                 client=client,
@@ -226,7 +220,6 @@ def handle_message(
             message_info=message_info,
             receiver_ids=send_to,
             slack_channel_config=slack_channel_config,
-            prompt=prompt,
             logger=logger,
             client=client,
             db_session=db_session,

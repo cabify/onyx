@@ -60,6 +60,7 @@ from onyx.auth.api_key import get_hashed_api_key_from_request
 from onyx.auth.email_utils import send_forgot_password_email
 from onyx.auth.email_utils import send_user_verification_email
 from onyx.auth.invited_users import get_invited_users
+from onyx.auth.invited_users import remove_user_from_invited_users
 from onyx.auth.schemas import AuthBackend
 from onyx.auth.schemas import UserCreate
 from onyx.auth.schemas import UserRole
@@ -69,6 +70,12 @@ from onyx.configs.app_configs import AUTH_COOKIE_EXPIRE_TIME_SECONDS
 from onyx.configs.app_configs import AUTH_TYPE
 from onyx.configs.app_configs import DISABLE_AUTH
 from onyx.configs.app_configs import EMAIL_CONFIGURED
+from onyx.configs.app_configs import PASSWORD_MAX_LENGTH
+from onyx.configs.app_configs import PASSWORD_MIN_LENGTH
+from onyx.configs.app_configs import PASSWORD_REQUIRE_DIGIT
+from onyx.configs.app_configs import PASSWORD_REQUIRE_LOWERCASE
+from onyx.configs.app_configs import PASSWORD_REQUIRE_SPECIAL_CHAR
+from onyx.configs.app_configs import PASSWORD_REQUIRE_UPPERCASE
 from onyx.configs.app_configs import REDIS_AUTH_KEY_PREFIX
 from onyx.configs.app_configs import REQUIRE_EMAIL_VERIFICATION
 from onyx.configs.app_configs import SESSION_EXPIRE_TIME_SECONDS
@@ -91,9 +98,9 @@ from onyx.db.auth import get_default_admin_user_emails
 from onyx.db.auth import get_user_count
 from onyx.db.auth import get_user_db
 from onyx.db.auth import SQLAlchemyUserAdminDB
-from onyx.db.engine import get_async_session
-from onyx.db.engine import get_async_session_context_manager
-from onyx.db.engine import get_session_with_tenant
+from onyx.db.engine.async_sql_engine import get_async_session
+from onyx.db.engine.async_sql_engine import get_async_session_context_manager
+from onyx.db.engine.sql_engine import get_session_with_tenant
 from onyx.db.models import AccessToken
 from onyx.db.models import OAuthAccount
 from onyx.db.models import User
@@ -235,7 +242,7 @@ def verify_email_domain(email: str) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email is not valid",
             )
-        domain = email.split("@")[-1]
+        domain = email.split("@")[-1].lower()
         if domain not in VALID_EMAIL_DOMAINS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -344,33 +351,36 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                         role=user_create.role,
                     )
                     user = await self.update(user_update, user)
+                remove_user_from_invited_users(user_create.email)
         finally:
             CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
         return user
 
     async def validate_password(self, password: str, _: schemas.UC | models.UP) -> None:
-        # Validate password according to basic security guidelines
-        if len(password) < 12:
+        # Validate password according to configurable security policy (defined via environment variables)
+        if len(password) < PASSWORD_MIN_LENGTH:
             raise exceptions.InvalidPasswordException(
-                reason="Password must be at least 12 characters long."
+                reason=f"Password must be at least {PASSWORD_MIN_LENGTH} characters long."
             )
-        if len(password) > 64:
+        if len(password) > PASSWORD_MAX_LENGTH:
             raise exceptions.InvalidPasswordException(
-                reason="Password must not exceed 64 characters."
+                reason=f"Password must not exceed {PASSWORD_MAX_LENGTH} characters."
             )
-        if not any(char.isupper() for char in password):
+        if PASSWORD_REQUIRE_UPPERCASE and not any(char.isupper() for char in password):
             raise exceptions.InvalidPasswordException(
                 reason="Password must contain at least one uppercase letter."
             )
-        if not any(char.islower() for char in password):
+        if PASSWORD_REQUIRE_LOWERCASE and not any(char.islower() for char in password):
             raise exceptions.InvalidPasswordException(
                 reason="Password must contain at least one lowercase letter."
             )
-        if not any(char.isdigit() for char in password):
+        if PASSWORD_REQUIRE_DIGIT and not any(char.isdigit() for char in password):
             raise exceptions.InvalidPasswordException(
                 reason="Password must contain at least one number."
             )
-        if not any(char in PASSWORD_SPECIAL_CHARS for char in password):
+        if PASSWORD_REQUIRE_SPECIAL_CHAR and not any(
+            char in PASSWORD_SPECIAL_CHARS for char in password
+        ):
             raise exceptions.InvalidPasswordException(
                 reason="Password must contain at least one special character from the following set: "
                 f"{PASSWORD_SPECIAL_CHARS}."
@@ -519,7 +529,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             ):
                 await self.user_db.update(user, {"oidc_expiry": None})
                 user.oidc_expiry = None  # type: ignore
-
+            remove_user_from_invited_users(user.email)
             if token:
                 CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
 
@@ -562,22 +572,19 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             logger.debug(f"Current tenant user count: {user_count}")
 
             with get_session_with_tenant(tenant_id=tenant_id) as db_session:
-                if user_count == 1:
-                    create_milestone_and_report(
-                        user=user,
-                        distinct_id=user.email,
-                        event_type=MilestoneRecordType.USER_SIGNED_UP,
-                        properties=None,
-                        db_session=db_session,
-                    )
-                else:
-                    create_milestone_and_report(
-                        user=user,
-                        distinct_id=user.email,
-                        event_type=MilestoneRecordType.MULTIPLE_USERS,
-                        properties=None,
-                        db_session=db_session,
-                    )
+                event_type = (
+                    MilestoneRecordType.USER_SIGNED_UP
+                    if user_count == 1
+                    else MilestoneRecordType.MULTIPLE_USERS
+                )
+                create_milestone_and_report(
+                    user=user,
+                    distinct_id=user.email,
+                    event_type=event_type,
+                    properties=None,
+                    db_session=db_session,
+                )
+
         finally:
             CURRENT_TENANT_ID_CONTEXTVAR.reset(token)
 

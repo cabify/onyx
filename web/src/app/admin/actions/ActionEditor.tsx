@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Formik, Form, Field, ErrorMessage, FieldArray } from "formik";
 import * as Yup from "yup";
 import { MethodSpec, ToolSnapshot } from "@/lib/tools/interfaces";
-import { TextFormField } from "@/components/admin/connectors/Field";
+import { TextFormField } from "@/components/Field";
 import { Button } from "@/components/ui/button";
 import {
   createCustomTool,
@@ -123,15 +123,15 @@ function ActionForm({
         <button
           type="button"
           className="
-            absolute 
-            bottom-4 
+            absolute
+            bottom-4
             right-4
             border-border
             border
             bg-background
             rounded
-            py-1 
-            px-3 
+            py-1
+            px-3
             text-sm
             hover:bg-accent-background
           "
@@ -162,7 +162,7 @@ function ActionForm({
       />
       <div className="mt-4 text-sm bg-blue-50 text-blue-700 dark:text-blue-300 dark:bg-blue-900 p-4 rounded-md border border-blue-200 dark:border-blue-800">
         <Link
-          href="https://docs.onyx.app/tools/custom"
+          href="https://docs.onyx.app/admin/actions/overview"
           className="text-link hover:underline flex items-center"
           target="_blank"
           rel="noopener noreferrer"

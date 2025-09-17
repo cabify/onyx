@@ -1,6 +1,6 @@
 "use client";
 
-import { ValidSources } from "@/lib/types";
+import { AccessType, ValidSources } from "@/lib/types";
 import useSWR, { mutate } from "swr";
 import { errorHandlingFetcher } from "@/lib/fetcher";
 import { FaKey } from "react-icons/fa";
@@ -10,6 +10,7 @@ import {
   deleteCredential,
   swapCredential,
   updateCredential,
+  updateCredentialWithPrivateKey,
 } from "@/lib/credential";
 import { usePopup } from "@/components/admin/connectors/Popup";
 import CreateCredential from "./actions/CreateCredential";
@@ -34,6 +35,7 @@ import {
 import { Spinner } from "@/components/Spinner";
 import { CreateStdOAuthCredential } from "@/components/credentials/actions/CreateStdOAuthCredential";
 import { Card } from "../ui/card";
+import { isTypedFileField, TypedFile } from "@/lib/connectors/fileTypes";
 
 export default function CredentialSection({
   ccPair,
@@ -79,9 +81,14 @@ export default function CredentialSection({
 
   const onSwap = async (
     selectedCredential: Credential<any>,
-    connectorId: number
+    connectorId: number,
+    accessType: AccessType
   ) => {
-    const response = await swapCredential(selectedCredential.id, connectorId);
+    const response = await swapCredential(
+      selectedCredential.id,
+      connectorId,
+      accessType
+    );
     if (response.ok) {
       mutate(buildSimilarCredentialInfoURL(sourceType));
       refresh();
@@ -106,7 +113,23 @@ export default function CredentialSection({
     details: any,
     onSucces: () => void
   ) => {
-    const response = await updateCredential(selectedCredential.id, details);
+    let privateKey: TypedFile | null = null;
+    Object.entries(details).forEach(([key, value]) => {
+      if (isTypedFileField(key)) {
+        privateKey = value as TypedFile;
+        delete details[key];
+      }
+    });
+    let response;
+    if (privateKey) {
+      response = await updateCredentialWithPrivateKey(
+        selectedCredential.id,
+        details,
+        privateKey
+      );
+    } else {
+      response = await updateCredential(selectedCredential.id, details);
+    }
     if (response.ok) {
       setPopup({
         message: "Updated credential",
@@ -224,7 +247,7 @@ export default function CredentialSection({
         >
           <ModifyCredential
             close={closeModifyCredential}
-            source={sourceType}
+            accessType={ccPair.access_type}
             attachedConnector={ccPair.connector}
             defaultedCredential={defaultedCredential}
             credentials={credentials}
@@ -272,6 +295,7 @@ export default function CredentialSection({
               ) : (
                 <CreateCredential
                   sourceType={sourceType}
+                  accessType={ccPair.access_type}
                   swapConnector={ccPair.connector}
                   setPopup={setPopup}
                   onSwap={onSwap}

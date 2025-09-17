@@ -7,6 +7,7 @@ from typing import TypeVar
 
 from onyx.connectors.interfaces import BaseConnector
 from onyx.connectors.interfaces import CheckpointedConnector
+from onyx.connectors.interfaces import CheckpointedConnectorWithPermSync
 from onyx.connectors.interfaces import CheckpointOutput
 from onyx.connectors.interfaces import LoadConnector
 from onyx.connectors.interfaces import PollConnector
@@ -24,9 +25,32 @@ TimeRange = tuple[datetime, datetime]
 CT = TypeVar("CT", bound=ConnectorCheckpoint)
 
 
+def batched_doc_ids(
+    checkpoint_connector_generator: CheckpointOutput[CT],
+    batch_size: int,
+) -> Generator[set[str], None, None]:
+    batch: set[str] = set()
+    for document, failure, next_checkpoint in CheckpointOutputWrapper[CT]()(
+        checkpoint_connector_generator
+    ):
+        if document is not None:
+            batch.add(document.id)
+        elif (
+            failure and failure.failed_document and failure.failed_document.document_id
+        ):
+            batch.add(failure.failed_document.document_id)
+
+        if len(batch) >= batch_size:
+            yield batch
+            batch = set()
+    if len(batch) > 0:
+        yield batch
+
+
 class CheckpointOutputWrapper(Generic[CT]):
     """
-    Wraps a CheckpointOutput generator to give things back in a more digestible format.
+    Wraps a CheckpointOutput generator to give things back in a more digestible format,
+    specifically for Document outputs.
     The connector format is easier for the connector implementor (e.g. it enforces exactly
     one new checkpoint is returned AND that the checkpoint is at the end), thus the different
     formats.
@@ -80,11 +104,19 @@ class ConnectorRunner(Generic[CT]):
         self,
         connector: BaseConnector,
         batch_size: int,
+        # cannot be True for non-checkpointed connectors
+        include_permissions: bool,
         time_range: TimeRange | None = None,
     ):
+        if not isinstance(connector, CheckpointedConnector) and include_permissions:
+            raise ValueError(
+                "include_permissions cannot be True for non-checkpointed connectors"
+            )
+
         self.connector = connector
         self.time_range = time_range
         self.batch_size = batch_size
+        self.include_permissions = include_permissions
 
         self.doc_batch: list[Document] = []
 
@@ -100,7 +132,19 @@ class ConnectorRunner(Generic[CT]):
                     raise ValueError("time_range is required for CheckpointedConnector")
 
                 start = time.monotonic()
-                checkpoint_connector_generator = self.connector.load_from_checkpoint(
+                if self.include_permissions:
+                    if not isinstance(
+                        self.connector, CheckpointedConnectorWithPermSync
+                    ):
+                        raise ValueError(
+                            "Connector does not support permission syncing"
+                        )
+                    load_from_checkpoint = (
+                        self.connector.load_from_checkpoint_with_perm_sync
+                    )
+                else:
+                    load_from_checkpoint = self.connector.load_from_checkpoint
+                checkpoint_connector_generator = load_from_checkpoint(
                     start=self.time_range[0].timestamp(),
                     end=self.time_range[1].timestamp(),
                     checkpoint=checkpoint,
@@ -110,7 +154,7 @@ class ConnectorRunner(Generic[CT]):
                 for document, failure, next_checkpoint in CheckpointOutputWrapper[CT]()(
                     checkpoint_connector_generator
                 ):
-                    if document is not None:
+                    if document is not None and isinstance(document, Document):
                         self.doc_batch.append(document)
 
                     if failure is not None:

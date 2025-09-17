@@ -17,16 +17,23 @@ export interface Settings {
   notifications: Notification[];
   needs_reindexing: boolean;
   gpu_enabled: boolean;
-  pro_search_enabled?: boolean;
   application_status: ApplicationStatus;
   auto_scroll: boolean;
   temperature_override_enabled: boolean;
   query_history_type: QueryHistoryType;
 
+  deep_research_enabled?: boolean;
+
   // Image processing settings
   image_extraction_and_analysis_enabled?: boolean;
   search_time_image_analysis_enabled?: boolean;
   image_analysis_max_size_mb?: number | null;
+
+  // User Knowledge settings
+  user_knowledge_enabled?: boolean;
+
+  // Connector settings
+  show_extra_connectors?: boolean;
 }
 
 export enum NotificationType {

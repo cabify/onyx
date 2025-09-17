@@ -38,7 +38,6 @@ def prompt_config() -> PromptConfig:
         system_prompt="System prompt",
         task_prompt="Task prompt",
         datetime_aware=False,
-        include_citations=True,
     )
 
 
@@ -85,7 +84,7 @@ def mock_inference_sections() -> list[InferenceSection]:
                 updated_at=datetime(2023, 1, 1),
                 source_links={0: "https://example.com/doc1"},
                 match_highlights=[],
-                image_file_name=None,
+                image_file_id=None,
                 doc_summary="",
                 chunk_context="",
             ),
@@ -110,7 +109,7 @@ def mock_inference_sections() -> list[InferenceSection]:
                 updated_at=datetime(2023, 1, 2),
                 source_links={0: "https://example.com/doc2"},
                 match_highlights=[],
-                image_file_name=None,
+                image_file_id=None,
                 doc_summary="",
                 chunk_context="",
             ),

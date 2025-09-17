@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from onyx.access.models import DocumentAccess
+from onyx.access.models import ExternalAccess
 from onyx.agents.agent_search.shared_graph_utils.models import QueryExpansionType
 from onyx.configs.chat_configs import TITLE_CONTENT_RATIO
 from onyx.context.search.models import IndexFilters
@@ -44,7 +45,7 @@ class IndexBatchParams:
     Information necessary for efficiently indexing a batch of documents
     """
 
-    doc_id_to_previous_chunk_cnt: dict[str, int | None]
+    doc_id_to_previous_chunk_cnt: dict[str, int]
     doc_id_to_new_chunk_cnt: dict[str, int]
     tenant_id: str
     large_chunks_enabled: bool
@@ -88,6 +89,9 @@ class DocumentMetadata:
     primary_owners: list[str] | None = None
     secondary_owners: list[str] | None = None
     from_ingestion_api: bool = False
+
+    external_access: ExternalAccess | None = None
+    doc_metadata: dict[str, Any] | None = None
 
 
 @dataclass

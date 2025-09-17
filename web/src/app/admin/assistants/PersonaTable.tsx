@@ -17,7 +17,6 @@ import {
 import { FiEdit2 } from "react-icons/fi";
 import { TrashIcon } from "@/components/icons/icons";
 import { useUser } from "@/components/user/UserProvider";
-import { useAssistants } from "@/components/context/AssistantsContext";
 import { ConfirmEntityModal } from "@/components/modals/ConfirmEntityModal";
 
 function PersonaTypeDisplay({ persona }: { persona: Persona }) {
@@ -40,15 +39,20 @@ function PersonaTypeDisplay({ persona }: { persona: Persona }) {
   return <Text>Personal {persona.owner && <>({persona.owner.email})</>}</Text>;
 }
 
-export function PersonasTable() {
+export function PersonasTable({
+  personas,
+  refreshPersonas,
+}: {
+  personas: Persona[];
+  refreshPersonas: () => void;
+}) {
   const router = useRouter();
   const { popup, setPopup } = usePopup();
   const { refreshUser, isAdmin } = useUser();
-  const {
-    allAssistants: assistants,
-    refreshAssistants,
-    editablePersonas,
-  } = useAssistants();
+
+  const editablePersonas = useMemo(() => {
+    return personas.filter((p) => !p.builtin_persona);
+  }, [personas]);
 
   const editablePersonaIds = useMemo(() => {
     return new Set(editablePersonas.map((p) => p.id.toString()));
@@ -63,18 +67,18 @@ export function PersonasTable() {
 
   useEffect(() => {
     const editable = editablePersonas.sort(personaComparator);
-    const nonEditable = assistants
+    const nonEditable = personas
       .filter((p) => !editablePersonaIds.has(p.id.toString()))
       .sort(personaComparator);
     setFinalPersonas([...editable, ...nonEditable]);
-  }, [editablePersonas, assistants, editablePersonaIds]);
+  }, [editablePersonas, personas, editablePersonaIds]);
 
   const updatePersonaOrder = async (orderedPersonaIds: UniqueIdentifier[]) => {
-    const reorderedAssistants = orderedPersonaIds.map(
-      (id) => assistants.find((assistant) => assistant.id.toString() === id)!
+    const reorderedPersonas = orderedPersonaIds.map(
+      (id) => personas.find((persona) => persona.id.toString() === id)!
     );
 
-    setFinalPersonas(reorderedAssistants);
+    setFinalPersonas(reorderedPersonas);
 
     const displayPriorityMap = new Map<UniqueIdentifier, number>();
     orderedPersonaIds.forEach((personaId, ind) => {
@@ -96,12 +100,12 @@ export function PersonasTable() {
         type: "error",
         message: `Failed to update persona order - ${await response.text()}`,
       });
-      setFinalPersonas(assistants);
-      await refreshAssistants();
+      setFinalPersonas(personas);
+      await refreshPersonas();
       return;
     }
 
-    await refreshAssistants();
+    await refreshPersonas();
     await refreshUser();
   };
 
@@ -119,7 +123,7 @@ export function PersonasTable() {
     if (personaToDelete) {
       const response = await deletePersona(personaToDelete.id);
       if (response.ok) {
-        await refreshAssistants();
+        refreshPersonas();
         closeDeleteModal();
       } else {
         setPopup({
@@ -147,7 +151,7 @@ export function PersonasTable() {
         personaToToggleDefault.is_default_persona
       );
       if (response.ok) {
-        await refreshAssistants();
+        refreshPersonas();
         closeDefaultModal();
       } else {
         setPopup({
@@ -237,15 +241,9 @@ export function PersonasTable() {
               <div
                 key="is_default_persona"
                 onClick={() => {
-                  if (isEditable) {
-                    openDefaultModal(persona);
-                  }
+                  openDefaultModal(persona);
                 }}
-                className={`px-1 py-0.5 rounded flex ${
-                  isEditable
-                    ? "hover:bg-accent-background-hovered cursor-pointer"
-                    : ""
-                } select-none w-fit`}
+                className={`px-1 py-0.5 rounded flex hover:bg-accent-background-hovered cursor-pointer select-none w-fit`}
               >
                 <div className="my-auto flex-none w-22">
                   {!persona.is_default_persona ? (
@@ -261,26 +259,20 @@ export function PersonasTable() {
               <div
                 key="is_visible"
                 onClick={async () => {
-                  if (isEditable) {
-                    const response = await togglePersonaVisibility(
-                      persona.id,
-                      persona.is_visible
-                    );
-                    if (response.ok) {
-                      await refreshAssistants();
-                    } else {
-                      setPopup({
-                        type: "error",
-                        message: `Failed to update persona - ${await response.text()}`,
-                      });
-                    }
+                  const response = await togglePersonaVisibility(
+                    persona.id,
+                    persona.is_visible
+                  );
+                  if (response.ok) {
+                    refreshPersonas();
+                  } else {
+                    setPopup({
+                      type: "error",
+                      message: `Failed to update persona - ${await response.text()}`,
+                    });
                   }
                 }}
-                className={`px-1 py-0.5 rounded flex ${
-                  isEditable
-                    ? "hover:bg-accent-background-hovered cursor-pointer"
-                    : ""
-                } select-none w-fit`}
+                className={`px-1 py-0.5 rounded flex hover:bg-accent-background-hovered cursor-pointer select-none w-fit`}
               >
                 <div className="my-auto w-12">
                   {!persona.is_visible ? (

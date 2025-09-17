@@ -1,12 +1,18 @@
 "use client";
 
 import React, { createContext, useContext, useState } from "react";
-import { CCPairBasicInfo, DocumentSet, Tag, ValidSources } from "@/lib/types";
+import {
+  CCPairBasicInfo,
+  DocumentSetSummary,
+  Tag,
+  ValidSources,
+} from "@/lib/types";
 import { ChatSession, InputPrompt } from "@/app/chat/interfaces";
 import { LLMProviderDescriptor } from "@/app/admin/configuration/llm/interfaces";
-import { Folder } from "@/app/chat/folders/interfaces";
+import { Folder } from "@/app/chat/components/folders/interfaces";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
+import { ToolSnapshot } from "@/lib/tools/interfaces";
 
 interface ChatContextProps {
   chatSessions: ChatSession[];
@@ -14,9 +20,10 @@ interface ChatContextProps {
   availableSources: ValidSources[];
   ccPairs: CCPairBasicInfo[];
   tags: Tag[];
-  documentSets: DocumentSet[];
-  availableDocumentSets: DocumentSet[];
+  documentSets: DocumentSetSummary[];
+  availableDocumentSets: DocumentSetSummary[];
   availableTags: Tag[];
+  availableTools: ToolSnapshot[];
   llmProviders: LLMProviderDescriptor[];
   folders: Folder[];
   openedFolders: Record<string, boolean>;

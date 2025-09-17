@@ -1,6 +1,6 @@
 "use client";
 
-import { TextFormField } from "@/components/admin/connectors/Field";
+import { TextFormField } from "@/components/Field";
 import { Form, Formik } from "formik";
 import * as Yup from "yup";
 import { createSlackBot, updateSlackBot } from "./new/lib";
@@ -101,7 +101,7 @@ export const SlackTokensForm = ({
               Please refer to our{" "}
               <a
                 className="text-blue-500 hover:underline"
-                href="https://docs.onyx.app/slack_bot_setup"
+                href="https://docs.onyx.app/admin/getting_started/slack_bot_setup"
                 target="_blank"
                 rel="noopener noreferrer"
               >

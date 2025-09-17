@@ -12,8 +12,8 @@ As an open source project in a rapidly changing space, we welcome all contributi
 
 The [GitHub Issues](https://github.com/onyx-dot-app/onyx/issues) page is a great place to start for contribution ideas.
 
-To ensure that your contribution is aligned with the project's direction, please reach out to Hagen (or any other maintainer) on the Onyx team
-via [Slack](https://join.slack.com/t/onyx-dot-app/shared_invite/zt-2twesxdr6-5iQitKZQpgq~hYIZ~dv3KA) /
+To ensure that your contribution is aligned with the project's direction, please reach out to any maintainer on the Onyx team
+via [Slack](https://join.slack.com/t/onyx-dot-app/shared_invite/zt-34lu4m7xg-TsKGO6h8PDvR5W27zTdyhA) /
 [Discord](https://discord.gg/TDJ59cGV2X) or [email](mailto:founders@onyx.app).
 
 Issues that have been explicitly approved by the maintainers (aligned with the direction of the project)
@@ -28,7 +28,7 @@ Your input is vital to making sure that Onyx moves in the right direction.
 Before starting on implementation, please raise a GitHub issue.
 
 Also, always feel free to message the founders (Chris Weaver / Yuhong Sun) on
-[Slack](https://join.slack.com/t/onyx-dot-app/shared_invite/zt-2twesxdr6-5iQitKZQpgq~hYIZ~dv3KA) /
+[Slack](https://join.slack.com/t/onyx-dot-app/shared_invite/zt-34lu4m7xg-TsKGO6h8PDvR5W27zTdyhA) /
 [Discord](https://discord.gg/TDJ59cGV2X) directly about anything at all.
 
 ### Contributing Code
@@ -59,6 +59,7 @@ Onyx being a fully functional app, relies on some external software, specificall
 - [Postgres](https://www.postgresql.org/) (Relational DB)
 - [Vespa](https://vespa.ai/) (Vector DB/Search Engine)
 - [Redis](https://redis.io/) (Cache)
+- [MinIO](https://min.io/) (File Store)
 - [Nginx](https://nginx.org/) (Not needed for development flows generally)
 
 > **Note:**
@@ -102,10 +103,10 @@ If using PowerShell, the command slightly differs:
 Install the required python dependencies:
 
 ```bash
-pip install -r onyx/backend/requirements/default.txt
-pip install -r onyx/backend/requirements/dev.txt
-pip install -r onyx/backend/requirements/ee.txt
-pip install -r onyx/backend/requirements/model_server.txt
+pip install -r backend/requirements/default.txt
+pip install -r backend/requirements/dev.txt
+pip install -r backend/requirements/ee.txt
+pip install -r backend/requirements/model_server.txt
 ```
 
 Install Playwright for Python (headless browser required by the Web Connector)
@@ -171,10 +172,10 @@ Otherwise, you can follow the instructions below to run the application for deve
 
 You will need Docker installed to run these containers.
 
-First navigate to `onyx/deployment/docker_compose`, then start up Postgres/Vespa/Redis with:
+First navigate to `onyx/deployment/docker_compose`, then start up Postgres/Vespa/Redis/MinIO with:
 
 ```bash
-docker compose -f docker-compose.dev.yml -p onyx-stack up -d index relational_db cache
+docker compose -f docker-compose.dev.yml -p onyx-stack up -d index relational_db cache minio
 ```
 
 (index refers to Vespa, relational_db refers to Postgres, and cache refers to Redis)

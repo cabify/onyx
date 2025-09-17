@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from types import SimpleNamespace
 
@@ -11,16 +12,17 @@ from onyx.configs.app_configs import POSTGRES_HOST
 from onyx.configs.app_configs import POSTGRES_PASSWORD
 from onyx.configs.app_configs import POSTGRES_PORT
 from onyx.configs.app_configs import POSTGRES_USER
-from onyx.db.engine import build_connection_string
-from onyx.db.engine import get_all_tenant_ids
-from onyx.db.engine import get_session_context_manager
-from onyx.db.engine import get_session_with_tenant
-from onyx.db.engine import SYNC_DB_API
+from onyx.db.engine.sql_engine import build_connection_string
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
+from onyx.db.engine.sql_engine import get_session_with_tenant
+from onyx.db.engine.sql_engine import SYNC_DB_API
+from onyx.db.engine.tenant_utils import get_all_tenant_ids
 from onyx.db.search_settings import get_current_search_settings
 from onyx.db.swap_index import check_and_perform_index_swap
 from onyx.document_index.document_index_utils import get_multipass_config
 from onyx.document_index.vespa.index import DOCUMENT_ID_ENDPOINT
 from onyx.document_index.vespa.index import VespaIndex
+from onyx.file_store.file_store import get_default_file_store
 from onyx.indexing.models import IndexingSetting
 from onyx.setup import setup_postgres
 from onyx.setup import setup_vespa
@@ -285,14 +287,14 @@ def reset_postgres(
     upgrade_postgres(database=database, config_name=config_name, revision="head")
     if setup_onyx:
         logger.info("Setting up Postgres...")
-        with get_session_context_manager() as db_session:
+        with get_session_with_current_tenant() as db_session:
             setup_postgres(db_session)
 
 
 def reset_vespa() -> None:
     """Wipe all data from the Vespa index."""
 
-    with get_session_context_manager() as db_session:
+    with get_session_with_current_tenant() as db_session:
         # swap to the correct default model
         check_and_perform_index_swap(db_session)
 
@@ -397,15 +399,36 @@ def reset_vespa_multitenant() -> None:
                 time.sleep(5)
 
 
+def reset_file_store() -> None:
+    """Reset the FileStore."""
+    filestore = get_default_file_store()
+    for file_record in filestore.list_files_by_prefix(""):
+        filestore.delete_file(file_record.file_id)
+
+
 def reset_all() -> None:
+    if os.environ.get("SKIP_RESET", "").lower() == "true":
+        logger.info("Skipping reset.")
+        return
+
     logger.info("Resetting Postgres...")
     reset_postgres()
     logger.info("Resetting Vespa...")
     reset_vespa()
+    logger.info("Resetting FileStore...")
+    reset_file_store()
 
 
 def reset_all_multitenant() -> None:
-    """Reset both Postgres and Vespa for all tenants."""
+    """Reset both Postgres and Vespa for all tenants.
+
+    Honors SKIP_RESET env var to allow callers (e.g., CI) to disable
+    heavy resets entirely for faster end-to-end runs.
+    """
+    if os.environ.get("SKIP_RESET", "").lower() == "true":
+        logger.info("SKIPPING multitenant reset due to SKIP_RESET=true")
+        return
+
     logger.info("Resetting Postgres for all tenants...")
     reset_postgres_multitenant()
     logger.info("Resetting Vespa for all tenants...")

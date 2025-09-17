@@ -1,7 +1,8 @@
+{{- if gt (int .Values.webserver.replicaCount) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "onyx-stack.fullname" . }}-webserver
+  name: {{ include "onyx-stack.fullname" . }}-web-server
   labels:
     {{- include "onyx-stack.labels" . | nindent 4 }}
 spec:
@@ -16,8 +17,9 @@ spec:
       {{- end }}
   template:
     metadata:
-      {{- with .Values.webserver.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- with .Values.webserver.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
@@ -33,12 +35,16 @@ spec:
       serviceAccountName: {{ include "onyx-stack.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.webserver.podSecurityContext | nindent 8 }}
+      {{- with .Values.webserver.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web-server
           securityContext:
             {{- toYaml .Values.webserver.securityContext | nindent 12 }}
-          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.webserver.image.pullPolicy }}
+          image: "{{ .Values.webserver.image.repository }}:{{ .Values.webserver.image.tag | default .Values.global.version }}"
+          imagePullPolicy: {{ .Values.global.pullPolicy }}
           ports:
             - name: http
               containerPort: {{ .Values.webserver.containerPorts.server }}
@@ -58,3 +64,4 @@ spec:
       volumes:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

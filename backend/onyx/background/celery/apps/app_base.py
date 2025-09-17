@@ -6,6 +6,7 @@ from typing import Any
 from typing import cast
 
 import sentry_sdk
+from celery import bootsteps  # type: ignore
 from celery import Task
 from celery.app import trace
 from celery.exceptions import WorkerShutdown
@@ -22,13 +23,15 @@ from sqlalchemy.orm import Session
 from onyx.background.celery.apps.task_formatters import CeleryTaskColoredFormatter
 from onyx.background.celery.apps.task_formatters import CeleryTaskPlainFormatter
 from onyx.background.celery.celery_utils import celery_is_worker_primary
+from onyx.background.celery.celery_utils import make_probe_path
+from onyx.background.celery.tasks.vespa.document_sync import DOCUMENT_SYNC_PREFIX
+from onyx.background.celery.tasks.vespa.document_sync import DOCUMENT_SYNC_TASKSET_KEY
 from onyx.configs.constants import ONYX_CLOUD_CELERY_TASK_PREFIX
 from onyx.configs.constants import OnyxRedisLocks
-from onyx.db.engine import get_sqlalchemy_engine
+from onyx.db.engine.sql_engine import get_sqlalchemy_engine
 from onyx.document_index.vespa.shared_utils.utils import wait_for_vespa_with_timeout
 from onyx.httpx.httpx_pool import HttpxPool
 from onyx.redis.redis_connector import RedisConnector
-from onyx.redis.redis_connector_credential_pair import RedisConnectorCredentialPair
 from onyx.redis.redis_connector_delete import RedisConnectorDelete
 from onyx.redis.redis_connector_doc_perm_sync import RedisConnectorPermissionSync
 from onyx.redis.redis_connector_ext_group_sync import RedisConnectorExternalGroupSync
@@ -37,8 +40,10 @@ from onyx.redis.redis_document_set import RedisDocumentSet
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.redis_usergroup import RedisUserGroup
 from onyx.utils.logger import ColoredFormatter
+from onyx.utils.logger import LoggerContextVars
 from onyx.utils.logger import PlainFormatter
 from onyx.utils.logger import setup_logger
+from shared_configs.configs import DEV_LOGGING_ENABLED
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
 from shared_configs.configs import SENTRY_DSN
@@ -90,7 +95,13 @@ def on_task_prerun(
     kwargs: dict[str, Any] | None = None,
     **other_kwargs: Any,
 ) -> None:
-    pass
+    # Reset any per-task logging context so that prefixes (e.g. pruning_ctx)
+    # from a previous task executed in the same worker process do not leak
+    # into the next task's log messages. This fixes incorrect [CC Pair:/Index Attempt]
+    # prefixes observed when a pruning task finishes and an indexing task
+    # runs in the same process.
+
+    LoggerContextVars.reset()
 
 
 def on_task_postrun(
@@ -143,8 +154,11 @@ def on_task_postrun(
 
     r = get_redis_client(tenant_id=tenant_id)
 
-    if task_id.startswith(RedisConnectorCredentialPair.PREFIX):
-        r.srem(RedisConnectorCredentialPair.get_taskset_key(), task_id)
+    # NOTE: we want to remove the `Redis*` classes, prefer to just have functions to
+    # do these things going forward. In short, things should generally be like the doc
+    # sync task rather than the others below
+    if task_id.startswith(DOCUMENT_SYNC_PREFIX):
+        r.srem(DOCUMENT_SYNC_TASKSET_KEY, task_id)
         return
 
     if task_id.startswith(RedisDocumentSet.PREFIX):
@@ -340,9 +354,22 @@ def on_secondary_worker_init(sender: Any, **kwargs: Any) -> None:
 def on_worker_ready(sender: Any, **kwargs: Any) -> None:
     task_logger.info("worker_ready signal received.")
 
+    # file based way to do readiness/liveness probes
+    # https://medium.com/ambient-innovation/health-checks-for-celery-in-kubernetes-cf3274a3e106
+    # https://github.com/celery/celery/issues/4079#issuecomment-1270085680
+
+    hostname: str = cast(str, sender.hostname)
+    path = make_probe_path("readiness", hostname)
+    path.touch()
+    logger.info(f"Readiness signal touched at {path}.")
+
 
 def on_worker_shutdown(sender: Any, **kwargs: Any) -> None:
     HttpxPool.close_all()
+
+    hostname: str = cast(str, sender.hostname)
+    path = make_probe_path("readiness", hostname)
+    path.unlink(missing_ok=True)
 
     if not celery_is_worker_primary(sender):
         return
@@ -395,6 +422,13 @@ def on_setup_logging(
     root_logger.addHandler(root_handler)
 
     if logfile:
+        # Truncate log file if DEV_LOGGING_ENABLED (for clean dev experience)
+        if DEV_LOGGING_ENABLED and os.path.exists(logfile):
+            try:
+                open(logfile, "w").close()  # Truncate the file
+            except Exception:
+                pass  # Ignore errors, just proceed with normal logging
+
         root_file_handler = logging.FileHandler(logfile)
         root_file_formatter = PlainFormatter(
             log_format,
@@ -418,6 +452,7 @@ def on_setup_logging(
     task_logger.addHandler(task_handler)
 
     if logfile:
+        # No need to truncate again, already done above for root logger
         task_file_handler = logging.FileHandler(logfile)
         task_file_handler.addFilter(TenantContextFilter())
         task_file_formatter = CeleryTaskPlainFormatter(
@@ -455,7 +490,8 @@ class TenantContextFilter(logging.Filter):
 
         tenant_id = CURRENT_TENANT_ID_CONTEXTVAR.get()
         if tenant_id:
-            tenant_id = tenant_id.split(TENANT_ID_PREFIX)[-1][:5]
+            # Match the 8 character tenant abbreviation used in OnyxLoggingAdapter
+            tenant_id = tenant_id.split(TENANT_ID_PREFIX)[-1][:8]
             record.name = f"[t:{tenant_id}]"
         else:
             record.name = ""
@@ -483,3 +519,34 @@ def wait_for_vespa_or_shutdown(sender: Any, **kwargs: Any) -> None:
         msg = "Vespa: Readiness probe did not succeed within the timeout. Exiting..."
         logger.error(msg)
         raise WorkerShutdown(msg)
+
+
+# File for validating worker liveness
+class LivenessProbe(bootsteps.StartStopStep):
+    requires = {"celery.worker.components:Timer"}
+
+    def __init__(self, worker: Any, **kwargs: Any) -> None:
+        super().__init__(worker, **kwargs)
+        self.requests: list[Any] = []
+        self.task_tref = None
+        self.path = make_probe_path("liveness", worker.hostname)
+
+    def start(self, worker: Any) -> None:
+        self.task_tref = worker.timer.call_repeatedly(
+            15.0,
+            self.update_liveness_file,
+            (worker,),
+            priority=10,
+        )
+
+    def stop(self, worker: Any) -> None:
+        self.path.unlink(missing_ok=True)
+        if self.task_tref:
+            self.task_tref.cancel()
+
+    def update_liveness_file(self, worker: Any) -> None:
+        self.path.touch()
+
+
+def get_bootsteps() -> list[type]:
+    return [LivenessProbe]

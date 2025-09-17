@@ -21,7 +21,8 @@ from onyx.background.celery.celery_redis import celery_get_queue_length
 from onyx.background.celery.celery_redis import celery_get_queued_task_ids
 from onyx.background.celery.celery_redis import celery_get_unacked_task_ids
 from onyx.background.celery.celery_utils import extract_ids_from_runnable_connector
-from onyx.background.celery.tasks.indexing.utils import IndexingCallbackBase
+from onyx.background.celery.tasks.beat_schedule import CLOUD_BEAT_MULTIPLIER_DEFAULT
+from onyx.background.celery.tasks.docprocessing.utils import IndexingCallbackBase
 from onyx.configs.app_configs import ALLOW_SIMULTANEOUS_PRUNING
 from onyx.configs.app_configs import JOB_TIMEOUT
 from onyx.configs.constants import CELERY_GENERIC_BEAT_LOCK_TIMEOUT
@@ -41,12 +42,11 @@ from onyx.db.connector_credential_pair import get_connector_credential_pair
 from onyx.db.connector_credential_pair import get_connector_credential_pair_from_id
 from onyx.db.connector_credential_pair import get_connector_credential_pairs
 from onyx.db.document import get_documents_for_connector_credential_pair
-from onyx.db.engine import get_session_with_current_tenant
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import ConnectorCredentialPairStatus
 from onyx.db.enums import SyncStatus
 from onyx.db.enums import SyncType
 from onyx.db.models import ConnectorCredentialPair
-from onyx.db.search_settings import get_current_search_settings
 from onyx.db.sync_record import insert_sync_record
 from onyx.db.sync_record import update_sync_record_status
 from onyx.db.tag import delete_orphan_tags__no_commit
@@ -55,13 +55,51 @@ from onyx.redis.redis_connector_prune import RedisConnectorPrune
 from onyx.redis.redis_connector_prune import RedisConnectorPrunePayload
 from onyx.redis.redis_pool import get_redis_client
 from onyx.redis.redis_pool import get_redis_replica_client
+from onyx.server.runtime.onyx_runtime import OnyxRuntime
 from onyx.server.utils import make_short_id
 from onyx.utils.logger import format_error_for_logging
 from onyx.utils.logger import LoggerContextVars
 from onyx.utils.logger import pruning_ctx
 from onyx.utils.logger import setup_logger
+from shared_configs.configs import MULTI_TENANT
 
 logger = setup_logger()
+
+
+def _get_pruning_block_expiration() -> int:
+    """
+    Compute the expiration time for the pruning block signal.
+    Base expiration is 60 seconds (1 minute), multiplied by the beat multiplier only in MULTI_TENANT mode.
+    """
+    base_expiration = 60  # seconds
+
+    if not MULTI_TENANT:
+        return base_expiration
+
+    try:
+        beat_multiplier = OnyxRuntime.get_beat_multiplier()
+    except Exception:
+        beat_multiplier = CLOUD_BEAT_MULTIPLIER_DEFAULT
+
+    return int(base_expiration * beat_multiplier)
+
+
+def _get_fence_validation_block_expiration() -> int:
+    """
+    Compute the expiration time for the fence validation block signal.
+    Base expiration is 300 seconds, multiplied by the beat multiplier only in MULTI_TENANT mode.
+    """
+    base_expiration = 300  # seconds
+
+    if not MULTI_TENANT:
+        return base_expiration
+
+    try:
+        beat_multiplier = OnyxRuntime.get_beat_multiplier()
+    except Exception:
+        beat_multiplier = CLOUD_BEAT_MULTIPLIER_DEFAULT
+
+    return int(base_expiration * beat_multiplier)
 
 
 class PruneCallback(IndexingCallbackBase):
@@ -99,14 +137,14 @@ def _is_pruning_due(cc_pair: ConnectorCredentialPair) -> bool:
             # if we've never indexed, we can't prune
             return False
 
-        # if never pruned, use the last time the connector indexed successfully
-        last_pruned = cc_pair.last_successful_index_time
+        # if never pruned, use the connector creation time. We could also
+        # compute the completion time of the first successful index attempt, but
+        # that is a reasonably heavy operation. This is a reasonable approximation —
+        # in the worst case, we'll prune a little bit earlier than we should.
+        last_pruned = cc_pair.connector.time_created
 
     next_prune = last_pruned + timedelta(seconds=cc_pair.connector.prune_freq)
-    if datetime.now(timezone.utc) < next_prune:
-        return False
-
-    return True
+    return datetime.now(timezone.utc) >= next_prune
 
 
 @shared_task(
@@ -134,6 +172,9 @@ def check_for_pruning(self: Task, *, tenant_id: str) -> bool | None:
 
         # but pruning only kicks off once per hour
         if not r.exists(OnyxRedisSignals.BLOCK_PRUNING):
+
+            task_logger.info("Checking for pruning due")
+
             cc_pair_ids: list[int] = []
             with get_session_with_current_tenant() as db_session:
                 cc_pairs = get_connector_credential_pairs(db_session)
@@ -148,21 +189,24 @@ def check_for_pruning(self: Task, *, tenant_id: str) -> bool | None:
                         cc_pair_id=cc_pair_id,
                     )
                     if not cc_pair:
+                        logger.error(f"CC pair not found: {cc_pair_id}")
                         continue
 
                     if not _is_pruning_due(cc_pair):
+                        logger.info(f"CC pair not due for pruning: {cc_pair_id}")
                         continue
 
                     payload_id = try_creating_prune_generator_task(
                         self.app, cc_pair, db_session, r, tenant_id
                     )
                     if not payload_id:
+                        logger.info(f"Pruning not created: {cc_pair_id}")
                         continue
 
                     task_logger.info(
                         f"Pruning queued: cc_pair={cc_pair.id} id={payload_id}"
                     )
-            r.set(OnyxRedisSignals.BLOCK_PRUNING, 1, ex=3600)
+            r.set(OnyxRedisSignals.BLOCK_PRUNING, 1, ex=_get_pruning_block_expiration())
 
         # we want to run this less frequently than the overall task
         lock_beat.reacquire()
@@ -175,7 +219,11 @@ def check_for_pruning(self: Task, *, tenant_id: str) -> bool | None:
             except Exception:
                 task_logger.exception("Exception while validating pruning fences")
 
-            r.set(OnyxRedisSignals.BLOCK_VALIDATE_PRUNING_FENCES, 1, ex=300)
+            r.set(
+                OnyxRedisSignals.BLOCK_VALIDATE_PRUNING_FENCES,
+                1,
+                ex=_get_fence_validation_block_expiration(),
+            )
 
         # use a lookup table to find active fences. We still have to verify the fence
         # exists since it is an optimization and not the source of truth.
@@ -221,11 +269,16 @@ def try_creating_prune_generator_task(
     is used to trigger prunes immediately, e.g. via the web ui.
     """
 
+    logger.info(f"try_creating_prune_generator_task: cc_pair={cc_pair.id}")
+
     redis_connector = RedisConnector(tenant_id, cc_pair.id)
 
     if not ALLOW_SIMULTANEOUS_PRUNING:
         count = redis_connector.prune.get_active_task_count()
         if count > 0:
+            logger.info(
+                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} no simultaneous pruning allowed"
+            )
             return None
 
     LOCK_TIMEOUT = 30
@@ -239,23 +292,38 @@ def try_creating_prune_generator_task(
 
     acquired = lock.acquire(blocking_timeout=LOCK_TIMEOUT / 2)
     if not acquired:
+        logger.info(
+            f"try_creating_prune_generator_task: cc_pair={cc_pair.id} lock not acquired"
+        )
         return None
 
     try:
         # skip pruning if already pruning
         if redis_connector.prune.fenced:
+            logger.info(
+                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} already pruning"
+            )
             return None
 
         # skip pruning if the cc_pair is deleting
         if redis_connector.delete.fenced:
+            logger.info(
+                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} deleting"
+            )
             return None
 
         # skip pruning if doc permissions sync is running
         if redis_connector.permissions.fenced:
+            logger.info(
+                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} permissions sync running"
+            )
             return None
 
         db_session.refresh(cc_pair)
         if cc_pair.status == ConnectorCredentialPairStatus.DELETING:
+            logger.info(
+                f"try_creating_prune_generator_task: cc_pair={cc_pair.id} deleting"
+            )
             return None
 
         # add a long running generator task to the queue
@@ -398,7 +466,7 @@ def connector_pruning_generator_task(
     # set thread_local=False since we don't control what thread the indexing/pruning
     # might run our callback with
     lock: RedisLock = r.lock(
-        OnyxRedisLocks.PRUNING_LOCK_PREFIX + f"_{redis_connector.id}",
+        OnyxRedisLocks.PRUNING_LOCK_PREFIX + f"_{redis_connector.cc_pair_id}",
         timeout=CELERY_PRUNING_LOCK_TIMEOUT,
         thread_local=False,
     )
@@ -449,9 +517,6 @@ def connector_pruning_generator_task(
                 cc_pair.connector.connector_specific_config,
                 cc_pair.credential,
             )
-
-            search_settings = get_current_search_settings(db_session)
-            redis_connector.new_index(search_settings.id)
 
             callback = PruneCallback(
                 0,

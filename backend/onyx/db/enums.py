@@ -56,6 +56,17 @@ class SyncStatus(str, PyEnum):
         return self in terminal_states
 
 
+class MCPAuthenticationType(str, PyEnum):
+    NONE = "NONE"
+    API_TOKEN = "API_TOKEN"
+    OAUTH = "OAUTH"
+
+
+class MCPAuthenticationPerformer(str, PyEnum):
+    ADMIN = "ADMIN"
+    PER_USER = "PER_USER"
+
+
 # Consistent with Celery task statuses
 class TaskStatus(str, PyEnum):
     PENDING = "PENDING"
@@ -72,6 +83,9 @@ class IndexModelStatus(str, PyEnum):
     def is_current(self) -> bool:
         return self == IndexModelStatus.PRESENT
 
+    def is_future(self) -> bool:
+        return self == IndexModelStatus.FUTURE
+
 
 class ChatSessionSharedStatus(str, PyEnum):
     PUBLIC = "public"
@@ -86,12 +100,23 @@ class ConnectorCredentialPairStatus(str, PyEnum):
     DELETING = "DELETING"
     INVALID = "INVALID"
 
+    @classmethod
+    def active_statuses(cls) -> list["ConnectorCredentialPairStatus"]:
+        return [
+            ConnectorCredentialPairStatus.ACTIVE,
+            ConnectorCredentialPairStatus.SCHEDULED,
+            ConnectorCredentialPairStatus.INITIAL_INDEXING,
+        ]
+
+    @classmethod
+    def indexable_statuses(self) -> list["ConnectorCredentialPairStatus"]:
+        # Superset of active statuses for indexing model swaps
+        return self.active_statuses() + [
+            ConnectorCredentialPairStatus.PAUSED,
+        ]
+
     def is_active(self) -> bool:
-        return (
-            self == ConnectorCredentialPairStatus.ACTIVE
-            or self == ConnectorCredentialPairStatus.SCHEDULED
-            or self == ConnectorCredentialPairStatus.INITIAL_INDEXING
-        )
+        return self in self.active_statuses()
 
 
 class AccessType(str, PyEnum):

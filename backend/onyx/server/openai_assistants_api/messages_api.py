@@ -18,7 +18,7 @@ from onyx.db.chat import get_chat_message
 from onyx.db.chat import get_chat_messages_by_session
 from onyx.db.chat import get_chat_session_by_id
 from onyx.db.chat import get_or_create_root_message
-from onyx.db.engine import get_session
+from onyx.db.engine.sql_engine import get_session
 from onyx.db.models import User
 from onyx.llm.utils import check_number_of_tokens
 
@@ -94,7 +94,6 @@ def create_message(
         chat_session_id=chat_session.id,
         parent_message=latest_message,
         message=message.content,
-        prompt_id=chat_session.persona.prompts[0].id,
         token_count=check_number_of_tokens(message.content),
         message_type=(
             MessageType.USER if message.role == "user" else MessageType.ASSISTANT

@@ -9,7 +9,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { pageType } from "@/app/chat/sessionSidebar/types";
+import { pageType } from "@/components/sidebar/types";
 import { Logo } from "../logo/Logo";
 import Link from "next/link";
 import { LogoComponent } from "@/components/logo/FixedLogo";
@@ -82,7 +82,7 @@ export default function LogoWithText({
         </div>
       )}
       {page == "chat" && !showArrow && (
-        <TooltipProvider delayDuration={1000}>
+        <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
@@ -112,7 +112,7 @@ export default function LogoWithText({
       )}
       <div className="flex ml-auto gap-x-4">
         {showArrow && toggleSidebar && (
-          <TooltipProvider delayDuration={0}>
+          <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button

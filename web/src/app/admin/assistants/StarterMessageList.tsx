@@ -12,7 +12,7 @@ import { FiTrash2, FiRefreshCw } from "react-icons/fi";
 import { StarterMessage } from "./interfaces";
 import { Button } from "@/components/ui/button";
 import { SwapIcon } from "@/components/icons/icons";
-import { TextFormField } from "@/components/admin/connectors/Field";
+import { TextFormField } from "@/components/Field";
 
 export default function StarterMessagesList({
   values,
@@ -80,7 +80,7 @@ export default function StarterMessagesList({
       ))}
 
       <div className="flex items-center gap-2 ">
-        <TooltipProvider delayDuration={50}>
+        <TooltipProvider>
           <Tooltip onOpenChange={setTooltipOpen} open={tooltipOpen}>
             <TooltipTrigger asChild>
               <Button

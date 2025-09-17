@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 import requests
 
 from onyx.background.indexing.models import IndexAttemptErrorPydantic
-from onyx.db.engine import get_session_context_manager
+from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.enums import IndexModelStatus
 from onyx.db.models import IndexAttempt
 from onyx.db.models import IndexingStatus
@@ -37,7 +37,7 @@ class IndexAttemptManager:
             base_time = datetime.now()
 
         attempts = []
-        with get_session_context_manager() as db_session:
+        with get_session_with_current_tenant() as db_session:
             # Get the current search settings
             search_settings = get_current_search_settings(db_session)
             if (
@@ -203,7 +203,9 @@ class IndexAttemptManager:
             )
 
             if index_attempt.status and index_attempt.status.is_terminal():
-                print(f"IndexAttempt {index_attempt_id} completed")
+                print(
+                    f"IndexAttempt {index_attempt_id} completed with status {index_attempt.status}"
+                )
                 return
 
             elapsed = time.monotonic() - start
@@ -216,6 +218,7 @@ class IndexAttemptManager:
                 f"Waiting for IndexAttempt {index_attempt_id} to complete. "
                 f"elapsed={elapsed:.2f} timeout={timeout}"
             )
+            time.sleep(5)
 
     @staticmethod
     def get_index_attempt_errors_for_cc_pair(
